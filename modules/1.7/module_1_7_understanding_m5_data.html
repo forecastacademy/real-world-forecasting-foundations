@@ -45,6 +45,7 @@
         const Calendar = ({ className }) => <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>;
         const DollarSign = ({ className }) => <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>;
         const ArrowRight = ({ className }) => <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>;
+        const Lightbulb = ({ className }) => <svg className={className} width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>;
 
         // Tab configuration
         const tabs = [
@@ -266,7 +267,7 @@
           return (
             <div className="space-y-6">
               <div className="bg-white rounded-xl p-6 shadow-lg">
-                <p className="text-gray-700 text-lg">Every feature column falls into one of four categories. Learn these—you'll use them constantly.</p>
+                <p className="text-gray-700 text-lg">Every column in M5 falls into one of four categories. Learn these—you'll use them constantly.</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -360,9 +361,9 @@
                 { name: 'd_1...d_1941', type: 'target', classification: 'TARGET VARIABLE', desc: 'Daily unit sales starting 2011-01-29', knownAt: 'Only up to forecast date', leakage: 'HIGH RISK', example: 'd_1=3, d_2=0, d_3=5' }
               ],
               warnings: [
-                { title: 'Wide Format Alert', text: 'Data comes in WIDE format (days as columns). Must reshape to LONG format: (unique_id, ds, y). The unique_id should combine item_id + store_id.' },
+                { title: 'Wide Format Alert', text: 'Data comes in WIDE format (days as columns). Must reshape to LONG format: (unique_id, ds, y). The unique_id should combine item_id + store_id.', insight: true },
                 { title: 'Target Column Leakage', text: 'When forecasting d_1900, you can only use d_1...d_1899 as features. Never include future days in training.' },
-                { title: 'No Explicit ID Column', text: 'No single "id" column exists. You must create unique_id by combining item_id and store_id (e.g., "FOODS_3_090_CA_3").' }
+                { title: 'No Explicit ID Column', text: 'No single "id" column exists. You must create unique_id by combining item_id and store_id (e.g., "FOODS_3_090_CA_3").', insight: true }
               ]
             },
             calendar: {
@@ -371,10 +372,10 @@
               color: colors.purple,
               role: 'KNOWN-AT-TIME FEATURES',
               shape: '1,969 rows × 14 columns',
-              keyPoint: 'Master date table. Join to sales via date or d_X. ALL fields are safe to use.',
+              keyPoint: 'Master date table using Walmart\'s FISCAL calendar (4-5-4 system). Join to sales via date or d_X. ALL fields are safe to use.',
               fields: [
                 { name: 'date', type: 'known', classification: 'TIME IDENTIFIER', desc: 'Date in y-m-d format', knownAt: 'Always', leakage: 'No risk', example: '2011-01-29' },
-                { name: 'wm_yr_wk', type: 'known', classification: 'TIME GROUPING', desc: 'Walmart week ID (for price joins)', knownAt: 'Always', leakage: 'No risk', example: '11101' },
+                { name: 'wm_yr_wk', type: 'known', classification: 'TIME GROUPING', desc: 'Walmart fiscal week ID (YYWWW format: 11101 = FY11, Week 1)', knownAt: 'Always', leakage: 'No risk', example: '11101' },
                 { name: 'weekday', type: 'known', classification: 'KNOWN-AT FEATURE', desc: 'Day name', knownAt: 'Always', leakage: 'No risk', example: 'Saturday' },
                 { name: 'wday', type: 'known', classification: 'KNOWN-AT FEATURE', desc: 'Day number (1=Saturday)', knownAt: 'Always', leakage: 'No risk', example: '1' },
                 { name: 'month', type: 'known', classification: 'KNOWN-AT FEATURE', desc: 'Month number', knownAt: 'Always', leakage: 'No risk', example: '1' },
@@ -386,9 +387,10 @@
                 { name: 'snap_CA/TX/WI', type: 'known', classification: 'KNOWN-AT FEATURE', desc: 'SNAP eligibility by state (0/1)', knownAt: 'Known in advance', leakage: 'No risk', example: '1 or 0' }
               ],
               warnings: [
+                { title: 'Walmart Fiscal Calendar (4-5-4)', text: 'Weeks/months follow Walmart\'s FISCAL calendar, not the standard calendar. Walmart uses a 4-5-4 system: each quarter has months of 4, 5, and 4 weeks respectively, and fiscal years start late January/early February. This is why wm_yr_wk "11101" (Week 1 of fiscal 2011) begins Jan 29, not Jan 1.', insight: true },
                 { title: 'All Calendar Features Are Safe', text: 'Every field is derived from date or official calendars. ALL safe for forecasting.', safe: true },
                 { title: 'Event Name ≠ Event Impact', text: 'Event NAMES are known, but event IMPACT on sales is NOT. Model the pattern, don\'t use realized sales.' },
-                { title: 'Multiple Events Per Day', text: 'Some dates have TWO events (event_name_1 and event_name_2). Account for both in features.' }
+                { title: 'Multiple Events Per Day', text: 'Some dates have TWO events (event_name_1 and event_name_2). Account for both in features.', insight: true }
               ]
             },
             prices: {
@@ -401,14 +403,14 @@
               fields: [
                 { name: 'store_id', type: 'static', classification: 'JOIN KEY', desc: 'Store where product is sold', knownAt: 'Always', leakage: 'No risk', example: 'CA_1' },
                 { name: 'item_id', type: 'static', classification: 'JOIN KEY', desc: 'Product ID', knownAt: 'Always', leakage: 'No risk', example: 'FOODS_3_090' },
-                { name: 'wm_yr_wk', type: 'dynamic', classification: 'JOIN KEY (TIME-VARYING)', desc: 'Walmart week ID for joining', knownAt: 'Depends on forecast date', leakage: 'CRITICAL', example: '11101' },
+                { name: 'wm_yr_wk', type: 'dynamic', classification: 'JOIN KEY (TIME-VARYING)', desc: 'Walmart fiscal week ID for joining to calendar', knownAt: 'Depends on forecast date', leakage: 'CRITICAL', example: '11101' },
                 { name: 'sell_price', type: 'dynamic', classification: 'DYNAMIC FEATURE', desc: 'Weekly price. Missing = not sold.', knownAt: 'UNKNOWN for future', leakage: 'HIGH RISK', example: '1.97' }
               ],
               warnings: [
                 { title: '🚨 THE CRITICAL LEAKAGE RISK', text: 'Prices are DYNAMIC and UNKNOWN at forecast time. You CANNOT use next week\'s price. Use: (1) LAGGED prices, (2) PLANNED promotional prices, or (3) FORECASTED prices.', critical: true },
-                { title: 'Weekly Granularity, Daily Sales', text: 'Prices are per week (constant for 7 days), but sales are daily. Each day in a week gets the same price.' },
-                { title: 'Missing Prices Mean Something', text: 'If sell_price is missing, the product was NOT sold that week. Consider encoding as "product_available" feature.' },
-                { title: 'Prices Change Over Time', text: 'Same item at same store can have different prices due to: seasonal adjustments, clearance, promotions, or permanent changes.' }
+                { title: 'Weekly Granularity, Daily Sales', text: 'Prices are per week (constant for 7 days), but sales are daily. Each day in a week gets the same price.', insight: true },
+                { title: 'Missing Prices Mean Something', text: 'If sell_price is missing, the product was NOT sold that week. Consider encoding as "product_available" feature.', insight: true },
+                { title: 'Prices Change Over Time', text: 'Same item at same store can have different prices due to: seasonal adjustments, clearance, promotions, or permanent changes.', insight: true }
               ]
             }
           };
@@ -457,16 +459,32 @@
                     <span className="font-semibold">💡 </span>{tables[selectedTable].keyPoint}
                   </div>
 
-                  {/* Warnings */}
-                  {tables[selectedTable].warnings.map((warning, idx) => (
-                    <div key={idx} className="mb-4 p-3 rounded-lg flex items-start gap-2" style={{ backgroundColor: warning.critical ? `${colors.danger}15` : warning.safe ? `${colors.success}15` : 'rgb(254 243 199)', borderLeft: `4px solid ${warning.critical ? colors.danger : warning.safe ? colors.success : '#f59e0b'}` }}>
-                      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: warning.critical ? colors.danger : warning.safe ? colors.success : '#f59e0b' }} />
-                      <div>
-                        <div className="font-bold text-sm">{warning.title}</div>
-                        <div className="text-sm text-gray-700">{warning.text}</div>
+                  {/* Warnings & Insights */}
+                  {tables[selectedTable].warnings.map((item, idx) => {
+                    const isInsight = item.insight;
+                    const isSafe = item.safe;
+                    const isCritical = item.critical;
+                    
+                    const bgColor = isCritical ? `${colors.danger}15` : isSafe ? `${colors.success}15` : isInsight ? `${colors.primary}10` : 'rgb(254 243 199)';
+                    const borderColor = isCritical ? colors.danger : isSafe ? colors.success : isInsight ? colors.primary : '#f59e0b';
+                    const iconColor = isCritical ? colors.danger : isSafe ? colors.success : isInsight ? colors.primary : '#f59e0b';
+                    
+                    return (
+                      <div key={idx} className="mb-4 p-3 rounded-lg flex items-start gap-2" style={{ backgroundColor: bgColor, borderLeft: `4px solid ${borderColor}` }}>
+                        {isInsight ? (
+                          <Lightbulb className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: iconColor }} />
+                        ) : isSafe ? (
+                          <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: iconColor }} />
+                        ) : (
+                          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" style={{ color: iconColor }} />
+                        )}
+                        <div>
+                          <div className="font-bold text-sm">{item.title}</div>
+                          <div className="text-sm text-gray-700">{item.text}</div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
 
                   {/* Fields Table */}
                   <h4 className="font-bold mb-3" style={{ color: colors.dark }}>Fields</h4>
