@@ -6,6 +6,7 @@ Utility functions for working with M5 dataset in the Forecast Academy.
 
 Core Functions:
 - load_m5(): Load M5 time series data with optional messification
+- load_m5_calendar(): Load M5 calendar data with dates and events
 - create_subset(): Create smaller subsets for faster iteration
 - messify_m5_data(): Simulate real-world data quality issues
 - expand_hierarchy(): Replace unique_id with original hierarchy columns
@@ -298,6 +299,92 @@ def has_m5_cache(data_dir: Path) -> bool:
                 return True
 
     return False
+
+
+def load_m5_calendar(
+    data_dir: Path,
+    verbose: bool = True
+) -> pd.DataFrame:
+    """
+    Load M5 calendar data with date information and events.
+
+    The calendar contains:
+    - date: Actual date
+    - wm_yr_wk: Walmart year-week (for price joining)
+    - weekday: Day name
+    - wday: Day number (1-7)
+    - month, year: Date components
+    - d: Day code (d_1, d_2, ..., d_1969)
+    - event_name_1/2: Holiday/event names
+    - event_type_1/2: Event types (Cultural, National, Religious, Sporting)
+    - snap_CA/TX/WI: SNAP (food stamps) indicators by state
+
+    Parameters
+    ----------
+    data_dir : Path
+        Directory containing M5 data (will look for calendar.csv)
+    verbose : bool, default=True
+        Whether to print loading information
+
+    Returns
+    -------
+    pd.DataFrame
+        Calendar DataFrame with date and event information
+
+    Raises
+    ------
+    FileNotFoundError
+        If calendar.csv is not found in expected locations
+
+    Examples
+    --------
+    >>> calendar = load_m5_calendar(Path('data'))
+    >>> calendar['date'] = pd.to_datetime(calendar['date'])
+    >>> print(calendar.columns)
+    # ['date', 'wm_yr_wk', 'weekday', 'wday', 'month', 'year', 'd',
+    #  'event_name_1', 'event_type_1', 'event_name_2', 'event_type_2',
+    #  'snap_CA', 'snap_TX', 'snap_WI']
+    """
+    data_dir = Path(data_dir)
+
+    # Search for calendar.csv in common M5 cache locations
+    search_paths = [
+        data_dir / 'calendar.csv',
+        data_dir / 'm5' / 'calendar.csv',
+        data_dir / 'M5' / 'calendar.csv',
+        data_dir / 'm5-forecasting-accuracy' / 'calendar.csv',
+        data_dir / 'datasets' / 'calendar.csv',
+        data_dir / 'm5' / 'datasets' / 'calendar.csv',
+        data_dir / 'M5' / 'datasets' / 'calendar.csv',
+    ]
+
+    calendar_path = None
+    for path in search_paths:
+        if path.exists():
+            calendar_path = path
+            break
+
+    if calendar_path is None:
+        raise FileNotFoundError(
+            f"calendar.csv not found in data directory.\n"
+            f"Searched locations:\n" +
+            "\n".join(f"  - {p}" for p in search_paths[:4]) +
+            f"\n\nMake sure M5 data has been downloaded. "
+            f"You can trigger the download by calling load_m5(data_dir) first."
+        )
+
+    if verbose:
+        print(f"Loading calendar from: {calendar_path}")
+
+    calendar = pd.read_csv(calendar_path)
+
+    if verbose:
+        print(f"  Shape: {calendar.shape[0]:,} rows × {calendar.shape[1]} columns")
+        print(f"  Date range: {calendar['date'].iloc[0]} to {calendar['date'].iloc[-1]}")
+        n_events = calendar['event_name_1'].notna().sum()
+        print(f"  Events: {n_events} days with events")
+
+    return calendar
 
 
 def load_m5_with_feedback(
@@ -1128,11 +1215,121 @@ def check_gaps(
 
 
 # ============================================================================
+# SECTION 6: CALENDAR AGGREGATION
+# ============================================================================
+
+def aggregate_calendar_to_weekly(
+    calendar: pd.DataFrame,
+    date_col: str = 'date',
+    week_start_day: str = 'Sunday'
+) -> pd.DataFrame:
+    """
+    Aggregate daily calendar data to weekly, splitting events into separate columns.
+
+    Converts daily M5 calendar features (events, SNAP flags) into weekly features
+    that align with weekly sales data. Events are split into individual columns
+    (event_name_1, event_name_2, etc.) based on the maximum events in any single week.
+
+    Aggregation Rules:
+    - Calendar identifiers (wm_yr_wk, month, year): First day of week (Sunday)
+    - Events: Collect unique events, split into separate columns
+    - SNAP flags: Max (if ANY day has SNAP=1, the week gets 1)
+
+    Parameters
+    ----------
+    calendar : pd.DataFrame
+        Daily calendar data from load_m5_calendar() with columns:
+        date, wm_yr_wk, month, year, event_name_1, event_type_1,
+        event_name_2, event_type_2, snap_CA, snap_TX, snap_WI
+    date_col : str, default='date'
+        Name of the date column
+    week_start_day : str, default='Sunday'
+        Day that starts the week ('Sunday' for Walmart fiscal week)
+
+    Returns
+    -------
+    pd.DataFrame
+        Weekly calendar with columns:
+        - ds: Week start date (datetime)
+        - wm_yr_wk, month, year: Calendar identifiers
+        - event_name_1, event_name_2, ...: Individual event names (one per column)
+        - event_type_1, event_type_2, ...: Individual event types (one per column)
+        - snap_CA, snap_TX, snap_WI: SNAP flags (1 if any day in week had SNAP)
+
+    Examples
+    --------
+    >>> calendar = load_m5_calendar(Path('data'))
+    >>> calendar['date'] = pd.to_datetime(calendar['date'])
+    >>> weekly_cal = aggregate_calendar_to_weekly(calendar)
+    >>> print(weekly_cal.columns)
+    # ['ds', 'wm_yr_wk', 'month', 'year', 'snap_CA', 'snap_TX', 'snap_WI',
+    #  'event_name_1', 'event_name_2', 'event_type_1', 'event_type_2']
+    """
+    df = calendar.copy()
+
+    # Ensure date is datetime
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # Calculate week start (Sunday) for each date
+    # dayofweek: Monday=0, ..., Saturday=5, Sunday=6
+    df['week_start'] = df[date_col] - pd.to_timedelta(
+        (df[date_col].dt.dayofweek + 1) % 7, unit='D'
+    )
+
+    # Step 1: Aggregate to weekly with combined event strings
+    weekly = df.groupby('week_start').agg({
+        'wm_yr_wk': 'first',
+        'month': 'first',
+        'year': 'first',
+        'event_name_1': lambda x: ', '.join(x.dropna().unique()) if x.dropna().any() else None,
+        'event_type_1': lambda x: ', '.join(x.dropna().unique()) if x.dropna().any() else None,
+        'event_name_2': lambda x: ', '.join(x.dropna().unique()) if x.dropna().any() else None,
+        'event_type_2': lambda x: ', '.join(x.dropna().unique()) if x.dropna().any() else None,
+        'snap_CA': 'max',
+        'snap_TX': 'max',
+        'snap_WI': 'max',
+    }).reset_index()
+
+    # Step 2: Merge event_name_1 and event_name_2 into single list
+    weekly['_all_events'] = (
+        weekly['event_name_1'].fillna('') + ', ' + weekly['event_name_2'].fillna('')
+    ).str.strip(', ').replace('', None)
+
+    weekly['_all_types'] = (
+        weekly['event_type_1'].fillna('') + ', ' + weekly['event_type_2'].fillna('')
+    ).str.strip(', ').replace('', None)
+
+    # Step 3: Split into separate columns
+    # Count max events in any week to determine number of columns needed
+    max_events = weekly['_all_events'].str.count(',').max() + 1
+
+    event_name_cols = weekly['_all_events'].str.split(', ', expand=True)
+    event_name_cols.columns = [f'event_name_{i+1}' for i in range(event_name_cols.shape[1])]
+
+    event_type_cols = weekly['_all_types'].str.split(', ', expand=True)
+    event_type_cols.columns = [f'event_type_{i+1}' for i in range(event_type_cols.shape[1])]
+
+    # Step 4: Build final dataframe
+    weekly = weekly.drop(columns=[
+        'event_name_1', 'event_type_1',
+        'event_name_2', 'event_type_2',
+        '_all_events', '_all_types'
+    ])
+    weekly = pd.concat([weekly, event_name_cols, event_type_cols], axis=1)
+
+    # Rename week_start to ds (standard Nixtla column name)
+    weekly = weekly.rename(columns={'week_start': 'ds'})
+
+    return weekly
+
+
+# ============================================================================
 # MODULE EXPORTS
 # ============================================================================
 
 __all__ = [
     'load_m5',
+    'load_m5_calendar',
     'load_m5_with_feedback',
     'has_m5_cache',
     'create_subset',
@@ -1140,6 +1337,7 @@ __all__ = [
     'messify_m5_data',
     'expand_hierarchy',
     'check_gaps',
+    'aggregate_calendar_to_weekly',
     'HIERARCHY_COLS',
 ]
 
@@ -1159,6 +1357,8 @@ if __name__ == "__main__":
     print("    - load_m5(data_dir, verbose=True, messify=False,")
     print("              include_hierarchy=False, n_series=None)")
     print("        → Main entry point with preprocessing options")
+    print("    - load_m5_calendar(data_dir, verbose=True)")
+    print("        → Load calendar with dates, events, and SNAP info")
     print("    - load_m5_with_feedback(data_dir, verbose=True, return_additional=False)")
     print("        → Low-level function with full control")
     print("    - has_m5_cache(data_dir)")
@@ -1183,12 +1383,16 @@ if __name__ == "__main__":
     print("=" * 70)
     print("""
 from pathlib import Path
-from m5_utils import load_m5
+from load_data import load_m5, load_m5_calendar
 
 DATA_DIR = Path('data')
 
 # Basic load (daily, unique_id)
 df = load_m5(DATA_DIR)
+
+# Load calendar for event features
+calendar = load_m5_calendar(DATA_DIR)
+calendar['date'] = pd.to_datetime(calendar['date'])
 
 # With hierarchy columns instead of unique_id
 df = load_m5(DATA_DIR, include_hierarchy=True)
