@@ -1,21 +1,77 @@
-MIT License
+# Creative Commons Attribution–NonCommercial–NoDerivatives 4.0 International (CC BY-NC-ND 4.0)
 
-Copyright (c) 2025 forecastacademy
+**Copyright © 2025 Forecast Academy, Jeffrey Tackes.  
+All Rights Reserved.**
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This work is licensed under the **Creative Commons Attribution–NonCommercial–NoDerivatives 4.0 International License**.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+You may view the full license here:  
+https://creativecommons.org/licenses/by-nc-nd/4.0/
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+---
+
+## **You Are Free To:**
+
+### ✔ **Share**
+Copy and redistribute the material in any medium or format **for personal, non-commercial use only**, provided you comply with the terms below.
+
+---
+
+## **Under the Following Terms:**
+
+### ❗ **Attribution — You must give appropriate credit.**
+Cite “Forecast Academy — Real-World Forecasting Foundations” when referencing or sharing material.
+
+### ❗ **NonCommercial — You may not use the material for commercial purposes.**
+This includes:
+- selling  
+- redistributing  
+- packaging into another course  
+- using in consulting deliverables  
+- internal corporate training without written permission  
+
+### ❗ **NoDerivatives — You may not remix, transform, or build upon the material.**
+This includes:
+- modifying the notebooks  
+- incorporating the code into another public project  
+- removing branding  
+- reposting modified versions  
+
+You may modify locally **for your own work**, but you may **not** publish or redistribute modified derivatives.
+
+---
+
+## **Additional Forecast Academy Terms**
+
+### ❗ **1. No AI Training**
+You may **not** use this material (code, text, scripts, slides, or documentation) to train:
+- machine learning models  
+- language models  
+- generative AI systems  
+- embeddings, vectors, or retrieval systems  
+
+### ❗ **2. No Redistribution of Artifacts**
+Course artifacts (diagnostics, summary files, parquet files, readiness reports) may not be:
+- republished  
+- uploaded to public repos  
+- transferred to third parties  
+- included in commercial systems  
+
+### ❗ **3. Company Use Requires Permission**
+Organizations wishing to:
+- use this material in internal training  
+- incorporate into corporate forecasting workflows  
+- deploy tsforge-based templates directly  
+
+must obtain written permission.
+
+---
+
+## **Disclaimer**
+This course is provided “as is,” without warranties of any kind. Forecast Academy bears no liability for any decisions made using the material.
+
+---
+
+## **Copyright Notice**
+Copyright © 2025 Forecast Academy, Jeffrey Tackes.  
+All Rights Reserved.
