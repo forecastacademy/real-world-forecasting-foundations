@@ -11,7 +11,7 @@ CacheManager for storing and tracking datasets with:
 ArtifactManager for curriculum outputs:
 - Separate output/ and reports/ directories
 - Module-level manifest tracking
-- Simpler filenames (1_06.parquet vs 1_06_first_contact_hash.parquet)
+- Simple filenames (1_06.parquet, 1_06.json)
 """
 
 import json
@@ -209,7 +209,7 @@ class CacheManager:
         # Save report if provided
         report_filename = None
         if report is not None:
-            report_filename = f"{key}_report.json"
+            report_filename = f"{key}.json"
             report_path = self.cache_dir / report_filename
             report.save(report_path)
         
@@ -451,9 +451,9 @@ class ArtifactManager:
         artifacts/
         ├── 01_foundations/
         │   ├── output/
-        │   │   └── 1_06.parquet         # Gitignored
+        │   │   └── 1_06.parquet             # Gitignored
         │   ├── reports/
-        │   │   └── 1_06.json            # Tracked
+        │   │   └── 1_06.json                # Tracked
         │   └── manifest.json            # Tracked
         └── manifest.json                # Global index
 
