@@ -1,0 +1,101 @@
+{
+  "dataset_name": "Weekly M5 Sales",
+  "generated_at": "2025-12-14 05:40",
+  "summary": {
+    "Rows": "6,848,638",
+    "Columns": "8",
+    "Series": "30,490",
+    "ID columns": "item_id, dept_id, cat_id, store_id, state_id, unique_id",
+    "Date range": "2011-01-23 \u2192 2016-06-19",
+    "Unique dates": "283",
+    "y mean": "9.95",
+    "y zeros": "1,645,477 (24.0%)",
+    "Memory (est.)": "158.1 MB"
+  },
+  "checks": [
+    {
+      "Category": "Schema",
+      "Check": "Column: ds",
+      "Status": "\u2713",
+      "Value": "Present",
+      "Notes": "Required"
+    },
+    {
+      "Category": "Schema",
+      "Check": "Column: y",
+      "Status": "\u2713",
+      "Value": "Present",
+      "Notes": "Required"
+    },
+    {
+      "Category": "Schema",
+      "Check": "Type: ds",
+      "Status": "\u2713",
+      "Value": "datetime64[ns]",
+      "Notes": ""
+    },
+    {
+      "Category": "Schema",
+      "Check": "Type: y",
+      "Status": "\u2713",
+      "Value": "float64",
+      "Notes": ""
+    },
+    {
+      "Category": "Completeness",
+      "Check": "NAs: ds",
+      "Status": "\u2713",
+      "Value": "0",
+      "Notes": ""
+    },
+    {
+      "Category": "Completeness",
+      "Check": "NAs: y",
+      "Status": "\u2713",
+      "Value": "0 (0.0%)",
+      "Notes": ""
+    },
+    {
+      "Category": "Completeness",
+      "Check": "NAs: ID columns",
+      "Status": "\u2713",
+      "Value": "0",
+      "Notes": ""
+    },
+    {
+      "Category": "Validity",
+      "Check": "Dates \u2265 1900",
+      "Status": "\u2713",
+      "Value": "0 invalid",
+      "Notes": ""
+    },
+    {
+      "Category": "Validity",
+      "Check": "No future dates",
+      "Status": "\u2713",
+      "Value": "0 future",
+      "Notes": ""
+    },
+    {
+      "Category": "Validity",
+      "Check": "y \u2265 0",
+      "Status": "\u2139",
+      "Value": "0 negative",
+      "Notes": "Review if unexpected"
+    },
+    {
+      "Category": "Integrity",
+      "Check": "No duplicate keys",
+      "Status": "\u2713",
+      "Value": "0",
+      "Notes": ""
+    },
+    {
+      "Category": "Integrity",
+      "Check": "Frequency",
+      "Status": "\u2139",
+      "Value": "7 days",
+      "Notes": "Check for gaps"
+    }
+  ]
+}

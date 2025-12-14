@@ -7,6 +7,11 @@ CacheManager for storing and tracking datasets with:
 - Config inheritance from parent datasets
 - Report storage alongside data
 - Cross-manager config lookup
+
+ArtifactManager for curriculum outputs:
+- Separate output/ and reports/ directories
+- Module-level manifest tracking
+- Simpler filenames (1_06.parquet vs 1_06_first_contact_hash.parquet)
 """
 
 import json
@@ -17,7 +22,11 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
-from ..utils.helpers import get_notebook_name, get_module_from_notebook
+from ..utils.helpers import (
+    get_notebook_name,
+    get_module_from_notebook,
+    get_artifact_subfolder,
+)
 
 if TYPE_CHECKING:
     from ..analysis.report import FirstContactReport
@@ -434,4 +443,269 @@ class CacheManager:
         print("✓ Cache cleared")
 
 
-__all__ = ['CacheManager', 'CacheEntry']
+class ArtifactManager:
+    """
+    Manages curriculum artifacts with separate output/reports directories.
+
+    Structure:
+        artifacts/
+        ├── 01_foundations/
+        │   ├── output/
+        │   │   └── 1_06.parquet         # Gitignored
+        │   ├── reports/
+        │   │   └── 1_06.json            # Tracked
+        │   └── manifest.json            # Tracked
+        └── manifest.json                # Global index
+
+    Parameters
+    ----------
+    artifacts_dir : Path
+        Root artifacts directory (e.g., PROJECT_ROOT / 'artifacts')
+
+    Examples
+    --------
+    >>> artifacts = ArtifactManager(PROJECT_ROOT / 'artifacts')
+    >>> artifacts.save(df, report=report)  # Auto-detects 1_06, 01_foundations
+    >>> df, report = artifacts.load('1_06')
+    """
+
+    def __init__(self, artifacts_dir: Path):
+        self.artifacts_dir = Path(artifacts_dir)
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        self.global_manifest_path = self.artifacts_dir / 'manifest.json'
+        self._global_manifest = self._load_json(self.global_manifest_path)
+
+    @staticmethod
+    def _load_json(path: Path) -> dict:
+        if path.exists():
+            with open(path, 'r') as f:
+                return json.load(f)
+        return {}
+
+    @staticmethod
+    def _save_json(path: Path, data: dict):
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+
+    def _get_module_dir(self, subfolder: Optional[str] = None) -> Path:
+        """Get module directory, auto-detecting from notebook if needed."""
+        if subfolder is None:
+            subfolder = get_artifact_subfolder()
+            if subfolder is None:
+                raise ValueError("Could not auto-detect subfolder. Provide explicitly.")
+
+        module_dir = self.artifacts_dir / subfolder
+        module_dir.mkdir(parents=True, exist_ok=True)
+        (module_dir / 'output').mkdir(exist_ok=True)
+        (module_dir / 'reports').mkdir(exist_ok=True)
+        return module_dir
+
+    def _get_module_manifest(self, module_dir: Path) -> dict:
+        manifest_path = module_dir / 'manifest.json'
+        return self._load_json(manifest_path)
+
+    def _save_module_manifest(self, module_dir: Path, manifest: dict):
+        self._save_json(module_dir / 'manifest.json', manifest)
+
+    def save(
+        self,
+        df: pd.DataFrame,
+        key: Optional[str] = None,
+        subfolder: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
+        source: Optional[str] = None,
+        report: Optional['FirstContactReport'] = None,
+    ) -> Path:
+        """
+        Save DataFrame and optional report to artifacts.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Data to save
+        key : str, optional
+            Artifact key (e.g., '1_06'). Auto-detects from notebook.
+        subfolder : str, optional
+            Module subfolder (e.g., '01_foundations'). Auto-detects.
+        config : dict, optional
+            Config metadata to store
+        source : str, optional
+            Source artifact key for lineage. Auto-detects from last load.
+        report : FirstContactReport, optional
+            Report to save alongside data
+
+        Returns
+        -------
+        Path
+            Path to saved parquet file
+        """
+        # Auto-detect key from notebook name
+        if key is None:
+            key = get_module_from_notebook()
+            if key is None:
+                raise ValueError("Could not auto-detect key. Provide explicitly.")
+
+        # Auto-detect source from load history (shared with CacheManager)
+        if source is None:
+            source = _load_history[-1] if _load_history else None
+
+        # Get module directory
+        module_dir = self._get_module_dir(subfolder)
+        subfolder_name = module_dir.name
+
+        # Save data
+        data_path = module_dir / 'output' / f'{key}.parquet'
+        df.to_parquet(data_path, index=False)
+
+        # Save report
+        report_path = None
+        if report is not None:
+            report_path = module_dir / 'reports' / f'{key}.json'
+            report.save(report_path)
+
+        # Update module manifest
+        module_manifest = self._get_module_manifest(module_dir)
+        module_manifest[key] = {
+            'key': key,
+            'data_file': f'output/{key}.parquet',
+            'report_file': f'reports/{key}.json' if report else None,
+            'config': config or {},
+            'source': source,
+            'created_at': datetime.now().isoformat(),
+            'rows': len(df),
+            'columns': list(df.columns),
+            'size_mb': round(data_path.stat().st_size / 1024**2, 2),
+        }
+        self._save_module_manifest(module_dir, module_manifest)
+
+        # Update global manifest
+        global_key = f'{subfolder_name}/{key}'
+        self._global_manifest[global_key] = {
+            'subfolder': subfolder_name,
+            'key': key,
+            'created_at': datetime.now().isoformat(),
+            'rows': len(df),
+            'has_report': report is not None,
+        }
+        self._save_json(self.global_manifest_path, self._global_manifest)
+
+        # Output
+        print(f"✓ Saved '{key}' → {subfolder_name}/")
+        print(f"   Data:   output/{key}.parquet ({module_manifest[key]['size_mb']} MB, {len(df):,} rows)")
+        if report:
+            print(f"   Report: reports/{key}.json")
+
+        return data_path
+
+    def load(
+        self,
+        key: str,
+        subfolder: Optional[str] = None,
+        with_report: bool = False,
+    ):
+        """
+        Load DataFrame (and optional report) from artifacts.
+
+        Parameters
+        ----------
+        key : str
+            Artifact key (e.g., '1_06')
+        subfolder : str, optional
+            Module subfolder. Auto-detects from notebook.
+        with_report : bool, default=False
+            Return (df, report) tuple
+
+        Returns
+        -------
+        pd.DataFrame or tuple
+            Data, or (data, report) if with_report=True
+        """
+        module_dir = self._get_module_dir(subfolder)
+        module_manifest = self._get_module_manifest(module_dir)
+
+        if key not in module_manifest:
+            print(f"⚠ Artifact '{key}' not found in {module_dir.name}/")
+            return (None, None) if with_report else None
+
+        entry = module_manifest[key]
+
+        # Load data
+        data_path = module_dir / entry['data_file']
+        if not data_path.exists():
+            print(f"⚠ Data file missing: {data_path}")
+            return (None, None) if with_report else None
+
+        df = pd.read_parquet(data_path)
+        print(f"✓ Loaded '{key}' from {module_dir.name}/")
+        print(f"   Shape: {len(df):,} × {len(df.columns)}")
+
+        if with_report:
+            report_obj = None
+            if entry.get('report_file'):
+                report_path = module_dir / entry['report_file']
+                if report_path.exists():
+                    from ..analysis.report import FirstContactReport
+                    report_obj = FirstContactReport.load(report_path)
+                    print(f"   Report: ✓")
+            return df, report_obj
+
+        return df
+
+    def info(self, key: str, subfolder: Optional[str] = None) -> Optional[dict]:
+        """Print detailed info about an artifact."""
+        module_dir = self._get_module_dir(subfolder)
+        module_manifest = self._get_module_manifest(module_dir)
+
+        if key not in module_manifest:
+            print(f"⚠ Artifact '{key}' not found")
+            return None
+
+        entry = module_manifest[key]
+        print(f"\n{'='*60}")
+        print(f"ARTIFACT: {module_dir.name}/{key}")
+        print(f"{'='*60}")
+        print(f"  Data:     {entry['data_file']}")
+        print(f"  Report:   {entry.get('report_file') or 'None'}")
+        print(f"  Created:  {entry['created_at'][:19]}")
+        print(f"  Size:     {entry['size_mb']} MB")
+        print(f"  Shape:    {entry['rows']:,} × {len(entry['columns'])}")
+        if entry.get('source'):
+            print(f"  Source:   {entry['source']}")
+        if entry.get('config'):
+            print(f"\n  Config:")
+            for k, v in entry['config'].items():
+                print(f"    {k}: {v}")
+        print(f"{'='*60}\n")
+        return entry
+
+    def list(self, subfolder: Optional[str] = None) -> pd.DataFrame:
+        """List artifacts in a module (or all if subfolder=None)."""
+        if subfolder:
+            module_dir = self._get_module_dir(subfolder)
+            module_manifest = self._get_module_manifest(module_dir)
+            rows = [{
+                'Key': key,
+                'Subfolder': subfolder,
+                'Rows': f"{e['rows']:,}",
+                'Size (MB)': e['size_mb'],
+                'Report': '✓' if e.get('report_file') else '-',
+            } for key, e in module_manifest.items()]
+        else:
+            rows = [{
+                'Key': e['key'],
+                'Subfolder': e['subfolder'],
+                'Rows': f"{e['rows']:,}",
+                'Report': '✓' if e.get('has_report') else '-',
+            } for key, e in self._global_manifest.items()]
+
+        if not rows:
+            print("📦 No artifacts found.")
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows)
+        print(f"\n📦 Artifacts ({len(df)}):\n")
+        print(df.to_string(index=False))
+        return df
+
+
+__all__ = ['CacheManager', 'CacheEntry', 'ArtifactManager']

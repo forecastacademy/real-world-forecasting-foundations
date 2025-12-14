@@ -43,7 +43,7 @@ from .adapters import (
 # =============================================================================
 # Cache Management
 # =============================================================================
-from .cache.cache import CacheManager
+from .cache.cache import CacheManager, ArtifactManager
 
 # =============================================================================
 # Reporting
@@ -56,7 +56,9 @@ from .analysis.report import first_contact_check, FirstContactReport
 from .utils.helpers import (
     find_project_root,
     get_notebook_name,
+    get_notebook_path,
     get_module_from_notebook,
+    get_artifact_subfolder,
 )
 
 
@@ -79,11 +81,14 @@ __all__ = [
     'M5_AVAILABLE',
     # Cache
     'CacheManager',
+    'ArtifactManager',
     # Report
     'first_contact_check',
     'FirstContactReport',
     # Helpers
     'find_project_root',
     'get_notebook_name',
+    'get_notebook_path',
     'get_module_from_notebook',
+    'get_artifact_subfolder',
 ]

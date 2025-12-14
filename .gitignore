@@ -131,6 +131,9 @@ notebooks/*/data/**
 # 📁 Outputs & Cache
 ###############################################################################
 
+# Project cache (intermediate/messified data)
+.cache/
+
 # Notebook auto-saves
 *.ipynb_checkpoints
 *.nbconvert.tmp
@@ -139,7 +142,20 @@ notebooks/*/data/**
 outputs/
 plots/
 figures/
-reports/
+
+###############################################################################
+# 📊 Artifacts (Curriculum Outputs)
+###############################################################################
+
+# Ignore parquet data files (large), but keep folder structure
+artifacts/*/output/*
+!artifacts/*/output/.gitkeep
+
+# Track reports, manifests, and .gitkeep files
+!artifacts/*/reports/
+!artifacts/*/manifest.json
+!artifacts/manifest.json
+!artifacts/.gitkeep
 
 ###############################################################################
 # 🔧 tsforge Build & Course Glue
