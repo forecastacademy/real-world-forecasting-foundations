@@ -1,10 +1,17 @@
 """
-First Contact Report Card - Structured Data Quality Assessment
+First Contact Report
+====================
 
-Returns a styled "report card" DataFrame that can be:
-- Displayed as a clean table in notebooks
-- Saved and compared across modules
-- Referenced as you fix issues throughout the course
+Data quality assessment tool that generates a structured "report card"
+for time series datasets.
+
+Features:
+- Schema validation (columns, dtypes)
+- Completeness checks (NAs)
+- Validity checks (date ranges, negative values)
+- Integrity checks (duplicates, frequency)
+- Summary statistics
+- Comparison between reports
 """
 
 import json
@@ -19,6 +26,25 @@ from datetime import datetime
 class FirstContactReport:
     """
     Structured report card from first contact with a dataset.
+    
+    Attributes
+    ----------
+    checks : pd.DataFrame
+        Individual check results with columns: Category, Check, Status, Value, Notes
+    summary : dict
+        Summary statistics (rows, columns, series count, etc.)
+    dataset_name : str
+        Name for display purposes
+    generated_at : str
+        Timestamp when report was generated
+        
+    Examples
+    --------
+    >>> report = first_contact_check(df, dataset_name='M5 Sales')
+    >>> report.table()              # Styled table in notebook
+    >>> report.blocking_issues()    # Just failures
+    >>> report.save('report.json')  # Save for later
+    >>> loaded = FirstContactReport.load('report.json')
     """
     checks: pd.DataFrame
     summary: dict
@@ -158,7 +184,19 @@ class FirstContactReport:
         )
     
     def compare(self, other: 'FirstContactReport') -> pd.DataFrame:
-        """Compare two reports to show progress."""
+        """
+        Compare two reports to show progress.
+        
+        Parameters
+        ----------
+        other : FirstContactReport
+            Report to compare against (typically "after" state)
+            
+        Returns
+        -------
+        pd.DataFrame
+            Comparison showing before/after status and what changed
+        """
         comp = self.checks[['Check', 'Status', 'Value']].merge(
             other.checks[['Check', 'Status', 'Value']],
             on='Check', suffixes=('_before', '_after')
@@ -355,30 +393,6 @@ def first_contact_check(
         summary=summary,
         dataset_name=dataset_name
     )
-
-
-# =============================================================================
-# DEMO
-# =============================================================================
-if __name__ == "__main__":
-    np.random.seed(42)
-    dates = pd.date_range('2020-01-01', periods=100, freq='D')
-    
-    df = pd.DataFrame({
-        'unique_id': ['store_1'] * 100 + ['store_2'] * 100,
-        'ds': list(dates) * 2,
-        'y': np.random.poisson(50, 200).astype(float)
-    })
-    df.loc[5, 'y'] = np.nan
-    
-    report = first_contact_check(df, dataset_name='Demo Data')
-    report.display()
-    
-    # Test save/load
-    report.save('/tmp/test_report.json')
-    loaded = FirstContactReport.load('/tmp/test_report.json')
-    print(f"\nLoaded: {loaded}")
-    print(f"Summary preserved: {loaded.summary}")
 
 
 __all__ = [

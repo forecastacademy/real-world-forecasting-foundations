@@ -1,12 +1,12 @@
 """
-CacheManager with automatic source + config inheritance
-========================================================
+Cache Manager
+=============
 
-Features:
-- Auto-detects source from load history
-- Auto-inherits config from source
-- Tracks reports alongside data
-- Cross-manager config lookup (cache <-> outputs)
+CacheManager for storing and tracking datasets with:
+- Automatic source/lineage tracking
+- Config inheritance from parent datasets
+- Report storage alongside data
+- Cross-manager config lookup
 """
 
 import json
@@ -17,8 +17,10 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
+from ..utils.helpers import get_notebook_name, get_module_from_notebook
+
 if TYPE_CHECKING:
-    from utils.report import FirstContactReport
+    from ..analysis.report import FirstContactReport
 
 
 MANIFEST_FILENAME = 'cache_manifest.json'
@@ -26,24 +28,6 @@ MANIFEST_FILENAME = 'cache_manifest.json'
 # Module-level tracking (shared across all CacheManager instances)
 _load_history: List[str] = []
 _all_managers: List['CacheManager'] = []
-
-
-def get_notebook_name() -> Optional[str]:
-    """Detect current notebook name."""
-    try:
-        from IPython import get_ipython
-        ipython = get_ipython()
-        if ipython and hasattr(ipython, 'user_ns') and '__vsc_ipynb_file__' in ipython.user_ns:
-            return Path(ipython.user_ns['__vsc_ipynb_file__']).stem
-    except Exception:
-        pass
-    return None
-
-
-def get_module_from_notebook() -> Optional[str]:
-    """Extract module (first 4 chars) from notebook name."""
-    nb_name = get_notebook_name()
-    return nb_name[:4] if nb_name and len(nb_name) >= 4 else None
 
 
 @dataclass
@@ -72,9 +56,17 @@ class CacheManager:
         Directory to store cached files
     overwrite_existing : bool, default=True
         Default behavior when saving to an existing key.
-        - True: Overwrite existing cache without warning
-        - False: Skip save if key exists (print warning)
-        Can be overridden per-call with save(..., overwrite=True/False)
+        
+    Examples
+    --------
+    >>> cache = CacheManager(Path('data/cache'))
+    >>> outputs = CacheManager(Path('data/outputs'))
+    >>> 
+    >>> # Save with auto-detected source and inherited config
+    >>> outputs.save(df, report=report, config={'freq': 'W'})
+    >>> 
+    >>> # Load with report
+    >>> df, report = outputs.load('1_06_output', with_report=True)
     """
     
     def __init__(self, cache_dir: Path, overwrite_existing: bool = True):
@@ -132,20 +124,39 @@ class CacheManager:
         source: Optional[str] = None,
         report: Optional['FirstContactReport'] = None,
         inherit_config: bool = True,
-        overwrite: Optional[bool] = None  # None = use overwrite_existing
+        overwrite: Optional[bool] = None
     ) -> Path:
         """
         Save DataFrame with automatic source and config inheritance.
         
         Parameters
         ----------
+        df : pd.DataFrame
+            Data to save
+        key : str, optional
+            Cache key. Defaults to '{notebook_name}_output'
+        config : dict, optional
+            Additional config (merged with inherited config)
+        module : str, optional
+            Module identifier. Auto-detects from notebook.
+        source : str, optional
+            Parent cache key. Auto-detects from last load.
+        report : FirstContactReport, optional
+            Report to save alongside data
+        inherit_config : bool, default=True
+            If True, inherit config from source
         overwrite : bool, optional
-            Whether to overwrite existing cache. If None, uses overwrite_existing
-            from CacheManager initialization.
+            Whether to overwrite. Defaults to overwrite_existing setting.
+            
+        Returns
+        -------
+        Path
+            Path to saved data file
         """
         # Resolve overwrite setting
         if overwrite is None:
             overwrite = self.overwrite_existing
+            
         # Auto-detect key
         if key is None:
             nb_name = get_notebook_name()
@@ -231,7 +242,25 @@ class CacheManager:
         with_report: bool = False,
         verbose: bool = True
     ):
-        """Load DataFrame from cache (and track for lineage)."""
+        """
+        Load DataFrame from cache (and track for lineage).
+        
+        Parameters
+        ----------
+        key : str
+            Cache key to load
+        config : dict, optional
+            Validates against stored config
+        with_report : bool, default=False
+            Return (df, report) tuple
+        verbose : bool, default=True
+            Print loading info
+            
+        Returns
+        -------
+        pd.DataFrame or tuple
+            Data, or (data, FirstContactReport) if with_report=True
+        """
         if key not in self._manifest:
             if verbose:
                 print(f"⚠ Cache '{key}' not found")
@@ -269,7 +298,7 @@ class CacheManager:
             if entry.get('report_filename'):
                 report_path = self.cache_dir / entry['report_filename']
                 if report_path.exists():
-                    from utils.report import FirstContactReport
+                    from ..analysis.report import FirstContactReport
                     report_obj = FirstContactReport.load(report_path)
                     if verbose:
                         print(f"   Report: ✓")
@@ -284,6 +313,7 @@ class CacheManager:
         return None
     
     def exists(self, key: str, config: Optional[Dict[str, Any]] = None) -> bool:
+        """Check if a cache key exists (optionally with matching config)."""
         if key not in self._manifest:
             return False
         if config is not None:
@@ -404,4 +434,4 @@ class CacheManager:
         print("✓ Cache cleared")
 
 
-__all__ = ['CacheManager', 'CacheEntry', 'get_notebook_name', 'get_module_from_notebook']
+__all__ = ['CacheManager', 'CacheEntry']
