@@ -1,43 +1,650 @@
 """
-M5 Utilities Module
-===================
+CacheManager with automatic source/lineage tracking
+====================================================
 
-Utility functions for working with M5 dataset in the Forecast Academy.
-
-Core Functions:
-- load_m5(): Load M5 time series data with optional messification
-- load_m5_calendar(): Load M5 calendar data with dates and events
-- create_subset(): Create smaller subsets for faster iteration
-- messify_m5_data(): Simulate real-world data quality issues
-- expand_hierarchy(): Replace unique_id with original hierarchy columns
-- check_gaps(): Diagnose gaps in time series data
-- first_contact_check(): Run data quality checks on a DataFrame
-
-Author: Forecast Academy
+Tracks what was loaded in the session and auto-links sources.
 """
 
-import time
-import numpy as np
+import json
+import hashlib
 import pandas as pd
 from pathlib import Path
-from typing import Tuple, Optional, List
+from dataclasses import dataclass, asdict
+from datetime import datetime
+from typing import Tuple, Optional, List, Dict, Any
+from .cache_manager import *
 
-# Optional import - will raise error when load functions are called if not installed
-try:
-    from datasetsforecast.m5 import M5
-    M5_AVAILABLE = True
-except ImportError:
-    M5_AVAILABLE = False
-    M5 = None
+MANIFEST_FILENAME = 'cache_manifest.json'
 
-
-# ============================================================================
-# SECTION 0: HIERARCHY & AGGREGATION HELPERS
-# ============================================================================
+# Module-level load history (shared across all CacheManager instances)
+_load_history: List[str] = []
 
 # M5 hierarchy columns in order
 HIERARCHY_COLS = ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id']
 
+# def get_notebook_name() -> Optional[str]:
+#     """Detect current notebook name."""
+#     try:
+#         from IPython import get_ipython
+#         ipython = get_ipython()
+#         if ipython and hasattr(ipython, 'user_ns') and '__vsc_ipynb_file__' in ipython.user_ns:
+#             return Path(ipython.user_ns['__vsc_ipynb_file__']).stem
+#     except Exception:
+#         pass
+#     return None
+
+
+# def get_module_from_notebook() -> Optional[str]:
+#     """Extract module (first 4 chars) from notebook name."""
+#     nb_name = get_notebook_name()
+#     return nb_name[:4] if nb_name and len(nb_name) >= 4 else None
+
+
+# @dataclass
+# class CacheEntry:
+#     """Metadata for a cached dataset."""
+#     key: str
+#     filename: str
+#     module: str
+#     config: Dict[str, Any]
+#     config_hash: str
+#     created_at: str
+#     rows: int
+#     columns: List[str]
+#     size_mb: float
+#     source: Optional[str] = None
+#     report_filename: Optional[str] = None
+
+
+# class CacheManager:
+#     """
+#     Manages cached datasets with automatic lineage tracking.
+    
+#     Lineage is tracked automatically:
+#     - Every load() call is recorded
+#     - save() auto-links to the most recent load as source
+    
+#     Examples
+#     --------
+#     >>> cache = CacheManager(DATA_DIR / 'cache')
+#     >>> outputs = CacheManager(DATA_DIR / 'outputs')
+#     >>> 
+#     >>> # Load tracks automatically
+#     >>> df = load_m5(DATA_DIR, cache=cache, cache_key='m5_messified', ...)
+#     >>> 
+#     >>> # Source auto-detected from last load
+#     >>> outputs.save(df=weekly_sales, report=report, config={...})
+#     >>> # → source='m5_messified' (automatic!)
+#     """
+    
+#     def __init__(self, cache_dir: Path):
+#         self.cache_dir = Path(cache_dir)
+#         self.cache_dir.mkdir(parents=True, exist_ok=True)
+#         self.manifest_path = self.cache_dir / MANIFEST_FILENAME
+#         self._manifest = self._load_manifest()
+    
+#     def _load_manifest(self) -> Dict[str, dict]:
+#         if self.manifest_path.exists():
+#             with open(self.manifest_path, 'r') as f:
+#                 return json.load(f)
+#         return {}
+    
+#     def _save_manifest(self):
+#         with open(self.manifest_path, 'w') as f:
+#             json.dump(self._manifest, f, indent=2, default=str)
+    
+#     @staticmethod
+#     def _hash_config(config: dict) -> str:
+#         config_str = json.dumps(config, sort_keys=True, default=str)
+#         return hashlib.md5(config_str.encode()).hexdigest()[:12]
+    
+#     @staticmethod
+#     def last_loaded() -> Optional[str]:
+#         """Return the most recently loaded cache key (across all managers)."""
+#         return _load_history[-1] if _load_history else None
+    
+#     @staticmethod
+#     def load_history() -> List[str]:
+#         """Return full load history for this session."""
+#         return _load_history.copy()
+    
+#     @staticmethod
+#     def clear_history():
+#         """Clear load history (e.g., at start of notebook)."""
+#         _load_history.clear()
+    
+#     def save(
+#         self,
+#         df: pd.DataFrame,
+#         key: Optional[str] = None,
+#         config: Optional[Dict[str, Any]] = None,
+#         module: Optional[str] = None,
+#         source: Optional[str] = None,  # ← Auto-detected if None
+#         report: Optional['FirstContactReport'] = None,
+#         overwrite: bool = True
+#     ) -> Path:
+#         """
+#         Save DataFrame with automatic source tracking.
+        
+#         Parameters
+#         ----------
+#         df : pd.DataFrame
+#             Data to save
+#         key : str, optional
+#             Cache key. Defaults to '{notebook_name}_output'
+#         config : dict, optional
+#             Configuration for cache invalidation
+#         module : str, optional
+#             Module identifier. Auto-detects from notebook.
+#         source : str, optional
+#             Parent cache key. If None, auto-detects from last load.
+#         report : FirstContactReport, optional
+#             Report to save alongside data
+#         overwrite : bool, default=True
+#             Overwrite existing cache
+#         """
+#         # Auto-detect key
+#         if key is None:
+#             nb_name = get_notebook_name()
+#             if nb_name:
+#                 key = f"{nb_name}_output"
+#             else:
+#                 raise ValueError("Could not auto-detect key. Provide explicitly.")
+        
+#         # Auto-detect module
+#         if module is None:
+#             module = get_module_from_notebook() or 'unknown'
+        
+#         # Auto-detect source from load history
+#         if source is None:
+#             source = self.last_loaded()
+        
+#         # Default empty config
+#         if config is None:
+#             config = {}
+        
+#         if key in self._manifest and not overwrite:
+#             print(f"⚠ Cache '{key}' exists. Use overwrite=True to replace.")
+#             return self.cache_dir / self._manifest[key]['filename']
+        
+#         # Save data
+#         config_hash = self._hash_config(config)
+#         filename = f"{key}_{config_hash}.parquet"
+#         filepath = self.cache_dir / filename
+#         df.to_parquet(filepath, index=False)
+        
+#         # Save report if provided
+#         report_filename = None
+#         if report is not None:
+#             report_filename = f"{key}_report.csv"
+#             report_path = self.cache_dir / report_filename
+#             report.checks.to_csv(report_path, index=False)
+        
+#         # Create manifest entry
+#         entry = CacheEntry(
+#             key=key,
+#             filename=filename,
+#             module=module,
+#             config=config,
+#             config_hash=config_hash,
+#             created_at=datetime.now().isoformat(),
+#             rows=len(df),
+#             columns=list(df.columns),
+#             size_mb=round(filepath.stat().st_size / 1024**2, 2),
+#             source=source,
+#             report_filename=report_filename
+#         )
+        
+#         self._manifest[key] = asdict(entry)
+#         self._save_manifest()
+        
+#         # Output
+#         print(f"✓ Saved '{key}'")
+#         print(f"   Data:   {filename} ({entry.size_mb} MB, {entry.rows:,} rows)")
+#         if report_filename:
+#             print(f"   Report: {report_filename}")
+#         if source:
+#             print(f"   Source: {source} (auto-detected)" if source == self.last_loaded() else f"   Source: {source}")
+        
+#         return filepath
+    
+#     def load(
+#         self,
+#         key: str,
+#         config: Optional[Dict[str, Any]] = None,
+#         with_report: bool = False,
+#         verbose: bool = True
+#     ):
+#         """
+#         Load DataFrame from cache (and track for lineage).
+        
+#         Parameters
+#         ----------
+#         key : str
+#             Cache key to load
+#         config : dict, optional
+#             Validates against stored config
+#         with_report : bool, default=False
+#             Return (df, report_df) tuple
+#         verbose : bool, default=True
+#             Print loading info
+#         """
+#         if key not in self._manifest:
+#             if verbose:
+#                 print(f"⚠ Cache '{key}' not found")
+#             return (None, None) if with_report else None
+        
+#         entry = self._manifest[key]
+        
+#         # Config validation
+#         if config is not None:
+#             current_hash = self._hash_config(config)
+#             if current_hash != entry['config_hash']:
+#                 if verbose:
+#                     print(f"⚠ Cache '{key}' config mismatch - will regenerate")
+#                 return (None, None) if with_report else None
+        
+#         # Load data
+#         filepath = self.cache_dir / entry['filename']
+#         if not filepath.exists():
+#             if verbose:
+#                 print(f"⚠ Cache file missing: {filepath}")
+#             return (None, None) if with_report else None
+        
+#         df = pd.read_parquet(filepath)
+        
+#         # Track this load for lineage
+#         _load_history.append(key)
+        
+#         if verbose:
+#             print(f"✓ Loaded '{key}' from cache")
+#             print(f"   Module: {entry['module']} | Created: {entry['created_at'][:10]}")
+#             print(f"   Shape: {entry['rows']:,} × {len(entry['columns'])}")
+        
+#         # Load report if requested
+#         if with_report:
+#             report_df = None
+#             if entry.get('report_filename'):
+#                 report_path = self.cache_dir / entry['report_filename']
+#                 if report_path.exists():
+#                     report_df = pd.read_csv(report_path)
+#                     if verbose:
+#                         print(f"   Report: {entry['report_filename']}")
+#             return df, report_df
+        
+#         return df
+    
+#     def exists(self, key: str, config: Optional[Dict[str, Any]] = None) -> bool:
+#         if key not in self._manifest:
+#             return False
+#         if config is not None:
+#             return self._hash_config(config) == self._manifest[key]['config_hash']
+#         return True
+    
+#     def info(self, key: str) -> Optional[dict]:
+#         """Print detailed info about a cached dataset."""
+#         if key not in self._manifest:
+#             print(f"⚠ Cache '{key}' not found")
+#             return None
+        
+#         entry = self._manifest[key]
+#         print(f"\n{'='*60}")
+#         print(f"CACHE: {key}")
+#         print(f"{'='*60}")
+#         print(f"  Data:     {entry['filename']}")
+#         print(f"  Report:   {entry.get('report_filename', 'None')}")
+#         print(f"  Module:   {entry['module']}")
+#         print(f"  Created:  {entry['created_at']}")
+#         print(f"  Size:     {entry['size_mb']} MB")
+#         print(f"  Shape:    {entry['rows']:,} × {len(entry['columns'])}")
+#         if entry.get('source'):
+#             print(f"  Source:   {entry['source']}")
+#         print(f"\n  Config:")
+#         for k, v in entry['config'].items():
+#             print(f"    {k}: {v}")
+#         print(f"{'='*60}\n")
+#         return entry
+    
+#     def list(self) -> pd.DataFrame:
+#         """List all cached datasets."""
+#         if not self._manifest:
+#             print("📦 No cached datasets found.")
+#             return pd.DataFrame()
+        
+#         rows = [{
+#             'Key': key,
+#             'Module': e['module'],
+#             'Rows': f"{e['rows']:,}",
+#             'Size (MB)': e['size_mb'],
+#             'Report': '✓' if e.get('report_filename') else '-',
+#             'Source': e.get('source', '-')
+#         } for key, e in self._manifest.items()]
+        
+#         df = pd.DataFrame(rows)
+#         print(f"\n📦 Cached Datasets ({len(df)}):\n")
+#         print(df.to_string(index=False))
+#         return df
+    
+#     def lineage(self, key: str) -> list:
+#         """Show data lineage for a cached dataset."""
+#         if key not in self._manifest:
+#             print(f"⚠ Cache '{key}' not found")
+#             return []
+        
+#         chain = [key]
+#         current = key
+#         while True:
+#             entry = self._manifest.get(current)
+#             if not entry or not entry.get('source'):
+#                 break
+#             chain.append(entry['source'])
+#             current = entry['source']
+        
+#         print(f"\n📜 Lineage for '{key}':")
+#         for i, item in enumerate(reversed(chain)):
+#             indent = "  " * i
+#             arrow = "→ " if i > 0 else ""
+#             module = self._manifest.get(item, {}).get('module', '?')
+#             has_report = '📋' if self._manifest.get(item, {}).get('report_filename') else ''
+#             print(f"   {indent}{arrow}{item} ({module}) {has_report}")
+#         return list(reversed(chain))
+    
+#     def delete(self, key: str):
+#         """Delete a cached dataset and its report."""
+#         if key not in self._manifest:
+#             print(f"⚠ Cache '{key}' not found")
+#             return
+        
+#         entry = self._manifest[key]
+        
+#         filepath = self.cache_dir / entry['filename']
+#         if filepath.exists():
+#             filepath.unlink()
+        
+#         if entry.get('report_filename'):
+#             report_path = self.cache_dir / entry['report_filename']
+#             if report_path.exists():
+#                 report_path.unlink()
+        
+#         del self._manifest[key]
+#         self._save_manifest()
+#         print(f"✓ Deleted cache '{key}'")
+
+
+# # =============================================================================
+# # USAGE
+# # =============================================================================
+
+# """
+# # Setup
+# cache = CacheManager(DATA_DIR / 'cache')
+# outputs = CacheManager(DATA_DIR / 'outputs')
+
+# # Load (automatically tracked)
+# daily_sales = load_m5(
+#     DATA_DIR,
+#     cache=cache,
+#     cache_key='m5_messified',  # ← This gets tracked
+#     messify=True,
+#     ...
+# )
+
+# # ... process data ...
+
+# # Save (source auto-detected!)
+# outputs.save(
+#     df=weekly_sales_opt,
+#     report=report,
+#     config={...}
+#     # source='m5_messified'  ← No longer needed! Auto-detected.
+# )
+# # ✓ Saved '1_06_first_contact_output'
+# #    Data:   1_06_first_contact_output_a1b2.parquet
+# #    Report: 1_06_first_contact_output_report.csv
+# #    Source: m5_messified (auto-detected)
+
+# # Check what was loaded this session
+# CacheManager.load_history()
+# # ['m5_messified']
+
+# # Override auto-detection if needed
+# outputs.save(df=df, source='custom_source', ...)
+# """
+
+def load_m5(
+    data_dir: Path,
+    # Caching
+    cache: Optional[CacheManager] = None,
+    cache_key: str = 'm5_data',
+    module: Optional[str] = None,
+    force_refresh: bool = False,
+    # Data source
+    from_parquet: Optional[Path] = None,
+    n_series: Optional[int] = None,
+    random_state: int = 42,
+    # Messification
+    messify: bool = False,
+    messify_config: Optional[dict] = None,
+    # Output format
+    include_hierarchy: bool = False,
+    # Other
+    m5_data_dir: Optional[Path] = None,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """
+    Load M5 time series data with optional messification and caching.
+    
+    Parameters
+    ----------
+    data_dir : Path
+        Directory for data operations
+    cache : CacheManager, optional
+        If provided, enables caching. Pass None to disable.
+    cache_key : str, default='m5_data'
+        Identifier for this dataset in the cache
+    module : str, optional
+        Module identifier. Auto-detects from notebook filename if None.
+    force_refresh : bool, default=False
+        Ignore cache and regenerate
+    from_parquet : Path, optional
+        Load from parquet instead of raw M5
+    n_series : int, optional
+        Subset to this many series
+    random_state : int, default=42
+        Random seed
+    messify : bool, default=False
+        Apply messification
+    messify_config : dict, optional
+        Override default messification parameters
+    include_hierarchy : bool, default=False
+        Expand unique_id to hierarchy columns
+    m5_data_dir : Path, optional
+        Directory for raw M5 data
+    verbose : bool, default=True
+        Print progress
+        
+    Returns
+    -------
+    pd.DataFrame
+        M5 data
+        
+    Examples
+    --------
+    >>> # Without caching
+    >>> df = load_m5(Path('data'), messify=True)
+    
+    >>> # With caching
+    >>> cache = CacheManager(Path('data/cache'))
+    >>> df = load_m5(
+    ...     Path('data'),
+    ...     cache=cache,
+    ...     cache_key='m5_messified',
+    ...     messify=True,
+    ...     include_hierarchy=True
+    ... )
+    """
+    
+    # Auto-detect module
+    if module is None:
+        module = get_module_from_notebook() or 'unknown'
+    
+    # Build messify config
+    _messify_config = {
+        'random_state': random_state,
+        'zeros_to_na_frac': 0.15,
+        'zeros_drop_frac': 0.02,
+        'zeros_drop_gaps_frac': None,
+        'duplicates_add_n': 150,
+        'na_drop_frac': None,
+        'dtypes_corrupt': True,
+    }
+    if messify_config:
+        _messify_config.update(messify_config)
+    
+    # Full config for cache
+    full_config = {
+        'from_parquet': str(from_parquet) if from_parquet else None,
+        'n_series': n_series,
+        'random_state': random_state,
+        'messify': messify,
+        'include_hierarchy': include_hierarchy,
+        **_messify_config
+    }
+    
+    # =========================================================================
+    # CHECK CACHE
+    # =========================================================================
+    if cache is not None and not force_refresh:
+        df = cache.load(cache_key, config=full_config, verbose=verbose)
+        if df is not None:
+            return df
+        if verbose:
+            print(f"🔄 Cache miss for '{cache_key}' - creating fresh...")
+    
+    # =========================================================================
+    # LOAD DATA
+    # =========================================================================
+    if m5_data_dir is None:
+        project_root = find_project_root()
+        m5_data_dir = project_root / 'data'
+    m5_data_dir = Path(m5_data_dir)
+    m5_data_dir.mkdir(exist_ok=True, parents=True)
+    
+    if verbose:
+        print("=" * 70)
+        print(f"LOADING {'FROM PARQUET' if from_parquet else 'M5 DATA'}")
+        print("=" * 70)
+    
+    S_df = None
+    
+    if from_parquet:
+        from_parquet = Path(from_parquet)
+        if not from_parquet.exists():
+            raise FileNotFoundError(f"Parquet not found: {from_parquet}")
+        df = pd.read_parquet(from_parquet)
+        if verbose:
+            print(f"✓ Loaded {df.shape[0]:,} rows × {df.shape[1]} columns")
+    else:
+        if include_hierarchy:
+            Y_df, _, S_df = load_m5_with_feedback(m5_data_dir, verbose=verbose, return_additional=True)
+        else:
+            Y_df = load_m5_with_feedback(m5_data_dir, verbose=verbose, return_additional=False)
+        df = Y_df
+    
+    has_unique_id = 'unique_id' in df.columns
+    has_hierarchy = all(c in df.columns for c in ['item_id', 'store_id'])
+    
+    # =========================================================================
+    # SUBSET
+    # =========================================================================
+    if n_series is not None:
+        if verbose:
+            print(f"\n📊 Subsetting to {n_series} series...")
+        df = create_subset(df, n_series=n_series, random_state=random_state, verbose=verbose)
+    
+    # =========================================================================
+    # MESSIFY (needs unique_id)
+    # =========================================================================
+    if messify:
+        if verbose:
+            print(f"\n🔧 Applying messification...")
+        df = messify_m5_data(df, **_messify_config, verbose=verbose)
+    
+    # =========================================================================
+    # EXPAND HIERARCHY (after messify)
+    # =========================================================================
+    if include_hierarchy and not has_hierarchy:
+        if verbose:
+            print(f"\n🏗️ Expanding hierarchy...")
+        df = expand_hierarchy(df, S_df=S_df, drop_unique_id=False, verbose=verbose)
+    
+    # =========================================================================
+    # SAVE TO CACHE
+    # =========================================================================
+    if cache is not None:
+        cache.save(
+            df=df,
+            key=cache_key,
+            config=full_config,
+            module=module,
+            source='raw_m5' if not from_parquet else Path(from_parquet).name
+        )
+    
+    if verbose:
+        print("\n" + "=" * 70)
+        print("LOAD COMPLETE")
+        print(f"  Shape: {df.shape[0]:,} × {df.shape[1]}")
+        if cache:
+            print(f"  Cached: '{cache_key}'")
+        print("=" * 70)
+    
+    return df
+
+def find_project_root(marker_files=('.git', 'pyproject.toml')):
+    """Walk up from this module's location until we find a directory with marker files."""
+    # Start from this module's location (utils/load_data.py)
+    current = Path(__file__).resolve().parent
+    for parent in [current] + list(current.parents):
+        if any((parent / marker).exists() for marker in marker_files):
+            return parent
+    raise FileNotFoundError("Could not find project root")
+
+def get_notebook_name() -> Optional[str]:
+    """
+    Try to detect the current Jupyter notebook name.
+
+    Returns the notebook name without the .ipynb extension, or None if not in a notebook
+    or if detection fails.
+    """
+    try:
+        # Try to get notebook name from IPython/Jupyter
+        from IPython import get_ipython
+        ipython = get_ipython()
+        if ipython is None:
+            return None
+
+        # For Jupyter notebooks, try to get the notebook path
+        # This works in classic Jupyter and JupyterLab
+        if hasattr(ipython, 'kernel') and hasattr(ipython.kernel, 'session'):
+            # Try getting from kernel connection file
+            import json
+            import re
+            from pathlib import Path as PathlibPath
+
+            # Alternative: check __vsc_ipynb_file__ for VS Code notebooks
+            if '__vsc_ipynb_file__' in dir(ipython.user_ns):
+                nb_path = ipython.user_ns['__vsc_ipynb_file__']
+                return PathlibPath(nb_path).stem
+
+        # Check for VS Code's notebook variable directly in user namespace
+        if hasattr(ipython, 'user_ns') and '__vsc_ipynb_file__' in ipython.user_ns:
+            nb_path = ipython.user_ns['__vsc_ipynb_file__']
+            return Path(nb_path).stem
+
+    except Exception:
+        pass
+
+    return None
 
 def create_unique_id(
     df: pd.DataFrame,
@@ -491,234 +1098,165 @@ def load_m5_with_feedback(
         return df  # Just return Y_df
 
 
-def load_m5(
-    data_dir: Path,
-    from_parquet: Optional[Path] = None,
-    verbose: bool = True,
-    messify: bool = False,
-    messify_kwargs: Optional[dict] = None,
-    include_hierarchy: bool = False,
-    create_unique_id: bool = True,
-    n_series: Optional[int] = None,
-    random_state: int = 42
-) -> pd.DataFrame:
-    """
-    Load M5 time series data with optional preprocessing.
+"""
+Optimized load_m5() - Drop-in replacement for the loading section
 
-    This is the main entry point for loading M5 data. It provides a unified
-    interface for common preprocessing steps:
+Key optimizations:
+1. Check for unique_id BEFORE deciding to create it
+2. Check for hierarchy columns BEFORE deciding to expand
+3. Clear verbose output showing what's skipped vs applied
+"""
 
-    - Load from raw M5 or from a previous module's parquet output
-    - Messification: Simulate real-world data quality issues
-    - Hierarchy expansion: Replace unique_id with original hierarchy columns
-    - Unique ID creation: Create unique_id from hierarchy columns (Nixtla compatible)
-    - Subsetting: Work with a smaller sample for faster iteration
-
-    For weekly aggregation, use aggregate_to_weekly() after loading.
-
-    Returns a DataFrame with either:
-    - ['unique_id', 'ds', 'y'] columns (default)
-    - ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'ds', 'y']
-      (when include_hierarchy=True and create_unique_id=False)
-    - ['item_id', 'dept_id', 'cat_id', 'store_id', 'state_id', 'unique_id', 'ds', 'y']
-      (when include_hierarchy=True and create_unique_id=True)
-
-    Parameters
-    ----------
-    data_dir : Path
-        Directory for M5 data cache (used when from_parquet is None)
-    from_parquet : Path, optional
-        Path to a parquet file from a previous module (e.g., '1_6_output.parquet').
-        If provided, loads from this file instead of raw M5 data.
-        All preprocessing options (messify, create_unique_id, etc.) still apply.
-    verbose : bool, default=True
-        Whether to print progress messages
-    messify : bool, default=False
-        If True, apply messification to simulate real-world data issues.
-        Customize with messify_kwargs.
-    messify_kwargs : dict, optional
-        Additional arguments for messify_m5_data(). Common options:
-        - random_state: int (default=42)
-        - zeros_to_na_frac: float (default=0.15)
-        - zeros_drop_frac: float (default=0.02)
-        - zeros_drop_gaps_frac: float (default=None)
-        - duplicates_add_n: int (default=150)
-        - na_drop_frac: float (default=None)
-        - dtypes_corrupt: bool (default=True)
-        - cache_dir: Path (default=None, uses data_dir)
-    include_hierarchy : bool, default=False
-        If True, replace 'unique_id' with original hierarchy columns:
-        item_id, dept_id, cat_id, store_id, state_id.
-        Ignored if loading from_parquet that already has hierarchy columns.
-    create_unique_id : bool, default=True
-        If True and hierarchy columns exist (item_id, store_id), create a
-        unique_id column from item_id + store_id. This ensures Nixtla
-        compatibility while keeping hierarchy columns.
-    n_series : int, optional
-        If provided, subset to this many series for faster iteration.
-        Applied after loading but before messification.
-    random_state : int, default=42
-        Random seed for subsetting reproducibility
-
-    Returns
-    -------
-    pd.DataFrame
-        M5 time series data with columns based on settings
-
-    Examples
-    --------
-    >>> from pathlib import Path
-    >>>
-    >>> # Basic: load raw M5 data
-    >>> df = load_m5(Path('data'))
-    >>>
-    >>> # Load from previous module output
-    >>> df = load_m5(Path('data'), from_parquet=Path('data/1_6_output.parquet'))
-    >>>
-    >>> # Load from module output with unique_id creation
-    >>> df = load_m5(
-    ...     Path('data'),
-    ...     from_parquet=Path('data/1_6_output.parquet'),
-    ...     create_unique_id=True
-    ... )
-    >>>
-    >>> # Load from module output and messify for training
-    >>> df = load_m5(
-    ...     Path('data'),
-    ...     from_parquet=Path('data/1_6_output.parquet'),
-    ...     messify=True,
-    ...     create_unique_id=True
-    ... )
-    >>>
-    >>> # With hierarchy columns AND unique_id (default)
-    >>> df = load_m5(Path('data'), include_hierarchy=True)
-    >>>
-    >>> # Messified for training exercises
-    >>> df = load_m5(Path('data'), messify=True, include_hierarchy=True)
-    """
-    # Determine source
-    loading_from_parquet = from_parquet is not None
-
-    if verbose:
-        print("=" * 70)
-        if loading_from_parquet:
-            print(f"LOADING FROM PARQUET: {Path(from_parquet).name}")
-        else:
-            print("LOADING M5 DATA")
-        print("=" * 70)
-
-    # Step 1: Load data from appropriate source
-    S_df = None
-    has_hierarchy = False
-
-    if loading_from_parquet:
-        # Load from parquet file
-        from_parquet = Path(from_parquet)
-        if not from_parquet.exists():
-            raise FileNotFoundError(f"Parquet file not found: {from_parquet}")
-
-        start_time = time.time()
-        df = pd.read_parquet(from_parquet)
-        load_time = time.time() - start_time
-
-        # Check if hierarchy columns already exist
-        has_hierarchy = all(c in df.columns for c in ['item_id', 'store_id'])
-
-        if verbose:
-            print(f"✓ Loaded in {load_time:.1f}s")
-            print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
-            memory_mb = df.memory_usage(deep=True).sum() / 1024**2
-            print(f"  Memory: {memory_mb:,.1f} MB")
-            print(f"  Columns: {list(df.columns)}")
-            if has_hierarchy:
-                print(f"  ✓ Hierarchy columns detected")
-    else:
-        # Load raw M5 data
-        need_hierarchy = include_hierarchy
-        if need_hierarchy:
-            Y_df, _, S_df = load_m5_with_feedback(data_dir, verbose=verbose, return_additional=True)
-        else:
-            Y_df = load_m5_with_feedback(data_dir, verbose=verbose, return_additional=False)
-
-        df = Y_df
+# def load_m5(
+#     data_dir: Path,
+#     from_parquet: Optional[Path] = None,
+#     verbose: bool = True,
+#     messify: bool = False,
+#     messify_kwargs: Optional[dict] = None,
+#     include_hierarchy: bool = False,
+#     create_unique_id: bool = True,
+#     n_series: Optional[int] = None,
+#     random_state: int = 42,
+#     m5_data_dir: Optional[Path] = None
+# ) -> pd.DataFrame:
+#     """
+#     Load M5 time series data with optional preprocessing.
     
-    # Step 2: Subset if requested (before messification for speed)
-    if n_series is not None:
-        if verbose:
-            print(f"\n📊 Subsetting to {n_series} series...")
-        df = create_subset(df, n_series=n_series, random_state=random_state, verbose=verbose)
+#     OPTIMIZED: Skips redundant operations by checking existing columns first.
+#     """
     
-    # Step 3: Messify if requested
-    if messify:
-        if verbose:
-            print(f"\n🔧 Applying messification...")
+#     # Determine source
+#     loading_from_parquet = from_parquet is not None
+
+#     # Default m5_data_dir to project root's data folder
+#     if m5_data_dir is None:
+#         project_root = find_project_root()
+#         m5_data_dir = project_root / 'data'
+#     m5_data_dir = Path(m5_data_dir)
+#     m5_data_dir.mkdir(exist_ok=True, parents=True)
+
+#     if verbose:
+#         print("=" * 70)
+#         if loading_from_parquet:
+#             print(f"LOADING FROM PARQUET: {Path(from_parquet).name}")
+#         else:
+#             print("LOADING M5 DATA")
+#         print("=" * 70)
+
+#     # =========================================================================
+#     # STEP 1: Load data
+#     # =========================================================================
+#     S_df = None
+
+#     if loading_from_parquet:
+#         from_parquet = Path(from_parquet)
+#         if not from_parquet.exists():
+#             raise FileNotFoundError(f"Parquet file not found: {from_parquet}")
+
+#         start_time = time.time()
+#         df = pd.read_parquet(from_parquet)
+#         load_time = time.time() - start_time
+
+#         if verbose:
+#             print(f"✓ Loaded in {load_time:.1f}s")
+#             print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+#             print(f"  Columns: {list(df.columns)}")
+#     else:
+#         # Load raw M5 - only fetch S_df if we'll need it
+#         need_S_df = include_hierarchy and not loading_from_parquet
+#         if need_S_df:
+#             Y_df, _, S_df = load_m5_with_feedback(m5_data_dir, verbose=verbose, return_additional=True)
+#         else:
+#             Y_df = load_m5_with_feedback(m5_data_dir, verbose=verbose, return_additional=False)
+#         df = Y_df
+
+#     # =========================================================================
+#     # STEP 2: Detect what already exists (do this ONCE, up front)
+#     # =========================================================================
+#     has_unique_id = 'unique_id' in df.columns
+#     has_hierarchy = all(c in df.columns for c in ['item_id', 'store_id'])
+#     has_full_hierarchy = all(c in df.columns for c in HIERARCHY_COLS)
+    
+#     if verbose:
+#         print(f"\n📋 Existing columns check:")
+#         print(f"   unique_id:  {'✓ exists' if has_unique_id else '✗ missing'}")
+#         print(f"   hierarchy:  {'✓ exists' if has_hierarchy else '✗ missing'}")
+
+#     # =========================================================================
+#     # STEP 3: Subset if requested (before messification for speed)
+#     # =========================================================================
+#     if n_series is not None:
+#         if verbose:
+#             print(f"\n📊 Subsetting to {n_series} series...")
+#         df = create_subset(df, n_series=n_series, random_state=random_state, verbose=verbose)
+
+#     # =========================================================================
+#     # STEP 4: Messify if requested
+#     # =========================================================================
+#     if messify:
+#         if verbose:
+#             print(f"\n🔧 Applying messification...")
         
-        # Set up messify kwargs with defaults
-        _messify_kwargs = {
-            'random_state': random_state,
-            'zeros_to_na_frac': 0.15,
-            'zeros_drop_frac': 0.02,
-            'zeros_drop_gaps_frac': None,
-            'duplicates_add_n': 150,
-            'na_drop_frac': None,
-            'dtypes_corrupt': True,
-            'cache_dir': data_dir,
-            'verbose': verbose
-        }
-        if messify_kwargs:
-            _messify_kwargs.update(messify_kwargs)
+#         _messify_kwargs = {
+#             'random_state': random_state,
+#             'zeros_to_na_frac': 0.15,
+#             'zeros_drop_frac': 0.02,
+#             'zeros_drop_gaps_frac': None,
+#             'duplicates_add_n': 150,
+#             'na_drop_frac': None,
+#             'dtypes_corrupt': True,
+#             'cache_dir': data_dir,
+#             'verbose': verbose
+#         }
+#         if messify_kwargs:
+#             _messify_kwargs.update(messify_kwargs)
         
-        df = messify_m5_data(df, **_messify_kwargs)
+#         df = messify_m5_data(df, **_messify_kwargs)
 
-    # Step 4: Expand hierarchy if requested (skip if already has hierarchy from parquet)
-    expanded_hierarchy = False
-    if include_hierarchy and not has_hierarchy:
-        if verbose and not messify:
-            print(f"\n🏗️ Expanding hierarchy...")
-        df = expand_hierarchy(df, S_df=S_df, verbose=verbose)
-        expanded_hierarchy = True
-        has_hierarchy = True  # Now we have hierarchy columns
+#     # =========================================================================
+#     # STEP 5: Expand hierarchy (SKIP if already exists)
+#     # =========================================================================
+#     if include_hierarchy:
+#         if has_hierarchy:
+#             if verbose:
+#                 print(f"\n🏗️ Hierarchy expansion: SKIPPED (columns already exist)")
+#         else:
+#             if verbose:
+#                 print(f"\n🏗️ Expanding hierarchy...")
+#             df = expand_hierarchy(df, S_df=S_df, verbose=verbose)
+#             has_hierarchy = True  # Update flag
 
-    # Step 5: Create unique_id from hierarchy columns if requested
-    # Works for both: raw M5 with include_hierarchy=True, or parquet with hierarchy cols
-    created_unique_id = False
-    if create_unique_id and has_hierarchy and 'unique_id' not in df.columns:
-        if verbose:
-            print(f"\n🔑 Creating unique_id...")
-        df = globals()['create_unique_id'](
-            df,
-            columns=['item_id', 'store_id'],
-            verbose=verbose
-        )
-        created_unique_id = True
+#     # =========================================================================
+#     # STEP 6: Create unique_id (SKIP if already exists)
+#     # =========================================================================
+#     if create_unique_id:
+#         if has_unique_id:
+#             if verbose:
+#                 print(f"\n🔑 unique_id creation: SKIPPED (column already exists)")
+#         elif not has_hierarchy:
+#             if verbose:
+#                 print(f"\n🔑 unique_id creation: SKIPPED (no hierarchy columns to build from)")
+#         else:
+#             if verbose:
+#                 print(f"\n🔑 Creating unique_id...")
+#             df = globals()['create_unique_id'](
+#                 df,
+#                 columns=['item_id', 'store_id'],
+#                 verbose=verbose
+#             )
 
-    # Summary
-    if verbose:
-        print("\n" + "=" * 70)
-        print("LOAD COMPLETE")
-        print("=" * 70)
-        print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
-        print(f"  Columns: {list(df.columns)}")
+#     # =========================================================================
+#     # SUMMARY
+#     # =========================================================================
+#     if verbose:
+#         print("\n" + "=" * 70)
+#         print("LOAD COMPLETE")
+#         print("=" * 70)
+#         print(f"  Shape: {df.shape[0]:,} rows × {df.shape[1]} columns")
+#         print(f"  Columns: {list(df.columns)}")
+#         print("=" * 70)
 
-        # Summarize what was applied
-        applied = []
-        if loading_from_parquet:
-            applied.append(f"from {Path(from_parquet).name}")
-        if n_series:
-            applied.append(f"subset ({n_series} series)")
-        if messify:
-            applied.append("messified")
-        if expanded_hierarchy:
-            applied.append("hierarchy expanded")
-        if created_unique_id:
-            applied.append("unique_id created")
-
-        if applied:
-            print(f"  Applied: {', '.join(applied)}")
-        print("=" * 70)
-
-    return df
-
+#     return df
 
 # ============================================================================
 # SECTION 2: SUBSET CREATION
@@ -832,6 +1370,7 @@ def messify_m5_data(
     dtypes_corrupt: bool = True,
     # --- CACHING ---
     cache_dir: Optional[Path] = None,
+    cache_tag: Optional[str] = None,
     force_refresh: bool = False,
     verbose: bool = True
 ) -> pd.DataFrame:
@@ -931,8 +1470,9 @@ def messify_m5_data(
 
         # Create filename that reflects the messification parameters
         n_series = df[id_col].nunique()
+        tag_prefix = f"{cache_tag}_" if cache_tag else ""
         cache_filename = (
-            f"m5_messy_"
+            f"{tag_prefix}m5_messy_"
             f"n{n_series}_"
             f"rs{random_state}_"
             f"z2na{int(zeros_to_na_frac*100) if zeros_to_na_frac else 0}_"
@@ -1327,19 +1867,19 @@ def aggregate_calendar_to_weekly(
 # MODULE EXPORTS
 # ============================================================================
 
-__all__ = [
-    'load_m5',
-    'load_m5_calendar',
-    'load_m5_with_feedback',
-    'has_m5_cache',
-    'create_subset',
-    'create_unique_id',
-    'messify_m5_data',
-    'expand_hierarchy',
-    'check_gaps',
-    'aggregate_calendar_to_weekly',
-    'HIERARCHY_COLS',
-]
+# __all__ = [
+#     'load_m5',
+#     'load_m5_with_feedback',
+#     'has_m5_cache',
+#     'create_subset',
+#     'create_unique_id',
+#     'messify_m5_data',
+#     'expand_hierarchy',
+#     'check_gaps',
+#     'find_project_root',
+#     'get_notebook_name',
+#     'HIERARCHY_COLS',
+# ]
 
 
 # ============================================================================
@@ -1357,8 +1897,6 @@ if __name__ == "__main__":
     print("    - load_m5(data_dir, verbose=True, messify=False,")
     print("              include_hierarchy=False, n_series=None)")
     print("        → Main entry point with preprocessing options")
-    print("    - load_m5_calendar(data_dir, verbose=True)")
-    print("        → Load calendar with dates, events, and SNAP info")
     print("    - load_m5_with_feedback(data_dir, verbose=True, return_additional=False)")
     print("        → Low-level function with full control")
     print("    - has_m5_cache(data_dir)")
@@ -1383,16 +1921,12 @@ if __name__ == "__main__":
     print("=" * 70)
     print("""
 from pathlib import Path
-from load_data import load_m5, load_m5_calendar
+from m5_utils import load_m5
 
 DATA_DIR = Path('data')
 
 # Basic load (daily, unique_id)
 df = load_m5(DATA_DIR)
-
-# Load calendar for event features
-calendar = load_m5_calendar(DATA_DIR)
-calendar['date'] = pd.to_datetime(calendar['date'])
 
 # With hierarchy columns instead of unique_id
 df = load_m5(DATA_DIR, include_hierarchy=True)
@@ -1418,3 +1952,28 @@ df = load_m5(
 )
     """)
     print("=" * 70)
+
+__all__ = [
+    # Loading functions
+    'load_m5',
+    'load_m5_with_feedback',
+    'load_m5_calendar',
+    'has_m5_cache',
+    # Preprocessing
+    'create_subset',
+    'create_unique_id',
+    'messify_m5_data',
+    'expand_hierarchy',
+    'aggregate_calendar_to_weekly',
+    # Inspection
+    'check_gaps',
+    # Utilities
+    'find_project_root',
+    'get_notebook_name',
+    'get_module_from_notebook',
+    # Caching
+    'CacheManager',
+    'CacheEntry',
+    # Constants
+    'HIERARCHY_COLS',
+]
