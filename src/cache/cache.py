@@ -29,7 +29,7 @@ from ..utils.helpers import (
 )
 
 if TYPE_CHECKING:
-    from ..analysis.report import FirstContactReport
+    from ..analysis.reports import FirstContactReport
 
 
 MANIFEST_FILENAME = 'cache_manifest.json'
@@ -80,7 +80,6 @@ class CacheManager:
     
     def __init__(self, cache_dir: Path, overwrite_existing: bool = True):
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.cache_dir / MANIFEST_FILENAME
         self._manifest = self._load_manifest()
         self.overwrite_existing = overwrite_existing
@@ -204,6 +203,7 @@ class CacheManager:
         config_hash = self._hash_config(final_config)
         filename = f"{key}_{config_hash}.parquet"
         filepath = self.cache_dir / filename
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         df.to_parquet(filepath, index=False)
         
         # Save report if provided
@@ -307,7 +307,7 @@ class CacheManager:
             if entry.get('report_filename'):
                 report_path = self.cache_dir / entry['report_filename']
                 if report_path.exists():
-                    from ..analysis.report import FirstContactReport
+                    from ..analysis.reports import FirstContactReport
                     report_obj = FirstContactReport.load(report_path)
                     if verbose:
                         print(f"   Report: ✓")
@@ -644,7 +644,7 @@ class ArtifactManager:
             if entry.get('report_file'):
                 report_path = module_dir / entry['report_file']
                 if report_path.exists():
-                    from ..analysis.report import FirstContactReport
+                    from ..analysis.reports import FirstContactReport
                     report_obj = FirstContactReport.load(report_path)
                     print(f"   Report: ✓")
             return df, report_obj

@@ -9,7 +9,6 @@ Modules:
 - hierarchy: Hierarchy expansion (expand_hierarchy, create_unique_id)
 - subset: Subset creation (create_subset)
 - messify: Data messification (messify_m5_data)
-- inspect: Inspection utilities (check_gaps, aggregate_calendar_to_weekly)
 """
 
 from .constants import HIERARCHY_COLS, M5_AVAILABLE
@@ -30,12 +29,6 @@ from .subset import create_subset
 
 from .messify import messify_m5_data
 
-from .inspect import (
-    check_gaps,
-    aggregate_calendar_to_weekly,
-)
-
-
 __all__ = [
     # Constants
     'HIERARCHY_COLS',
@@ -53,6 +46,4 @@ __all__ = [
     # Messify
     'messify_m5_data',
     # Inspect
-    'check_gaps',
-    'aggregate_calendar_to_weekly',
 ]

@@ -187,4 +187,5 @@ Thumbs.db
 *.swo
 *.zip
 *.tar.gz
+*.json
 

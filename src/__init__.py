@@ -32,13 +32,12 @@ from .adapters import (
     expand_hierarchy,
     create_subset,
     messify_m5_data,
-    # Inspection
-    check_gaps,
-    aggregate_calendar_to_weekly,
     # Constants
     HIERARCHY_COLS,
     M5_AVAILABLE,
 )
+
+from .features import aggregate_calendar_to_weekly
 
 # =============================================================================
 # Cache Management
@@ -48,7 +47,7 @@ from .cache.cache import CacheManager, ArtifactManager
 # =============================================================================
 # Reporting
 # =============================================================================
-from .analysis.report import first_contact_check, FirstContactReport
+from .analysis.reports import first_contact_check, FirstContactReport
 
 # =============================================================================
 # Helpers
@@ -74,7 +73,6 @@ __all__ = [
     'create_subset',
     'messify_m5_data',
     # Inspection
-    'check_gaps',
     'aggregate_calendar_to_weekly',
     # Constants
     'HIERARCHY_COLS',
