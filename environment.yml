@@ -1,52 +1,51 @@
 name: forecast-academy
 channels:
   - conda-forge
-  - defaults
 
 dependencies:
-  - python=3.10
-  # CORE MATH (Pinned for maximum stability)
-  - numpy<2.0                # CRITICAL: Avoids Numpy 2.0 ABI conflicts
-  - pandas>=2.0              # Ensures modern Pandas features
+  - python=3.11
+
+  # CORE MATH
+  - numpy<2.0
+  - pandas>=2.0
   - scipy
   - scikit-learn
   - statsmodels
 
-  # VISUALIZATION & INTERACTIVITY
+  # NOTEBOOKS & INTERACTIVITY
+  - jupyterlab
+  - ipywidgets>=8
   - matplotlib
   - seaborn
   - plotly
-  - ipywidgets               # CRITICAL: Required for 1.11 Dropdowns
-  - jupyter
-  - jupyterlab
 
   # DATA HANDLING
   - pyarrow
-  - fastparquet
-  - openpyxl                 # Nice to have for reading random Excel files
-  - tqdm                     # Progress bars (students love them)
+  - openpyxl
+  - tqdm
 
-  # PERFORMANCE (Let conda resolve compatible versions first)
-  - numba                    
+  # PERFORMANCE
+  - numba
   - llvmlite
 
-  # PIP ECOSYSTEM
+  # PIP TOOLING (helps git installs/builds)
   - pip
+  - setuptools
+  - wheel
+
   - pip:
-      # COURSE LIBRARY
-      - tsforge>=0.1.0
+      # TSFORGE (from GitHub)
+      - git+https://github.com/forecastacademy/tsforge.git
+
+      # NIXTLA STACK
+      - statsforecast
+      - mlforecast
+      - neuralforecast
+      - utilsforecast
+      - datasetsforecast
+      - tsfeatures
 
       # UTILITIES
-      - dtype-diet>=0.2.0
-      - gdown                # CRITICAL: For scripts/download_data.py
-      - holidays             # For Module 1.10 Calendar
-
-      # NIXTLA STACK (Pinned versions are good practice)
-      - statsforecast==1.7.5
-      - mlforecast==0.13.4
-      - neuralforecast==1.7.2
-      - utilsforecast==0.1.12
-      - datasetsforecast     # CRITICAL: Helper for downloading M5/standard datasets
-      
-      # DIAGNOSTICS
-      - tsfeatures>=0.5.0
+      - dtype-diet>=0.0.2
+      - gdown
+      - holidays

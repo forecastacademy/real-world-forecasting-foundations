@@ -1,4 +1,4 @@
-from .reports import first_contact_check, FirstContactReport
+from .reports import ModuleReport, Snapshot, plot_timeline_health
 from .profile import (
     profile_series,
     profile_dataframe,
@@ -16,8 +16,9 @@ from .profile import (
 )
 
 __all__ = [
-    'first_contact_check',
-    'FirstContactReport',
+    'ModuleReport',
+    'Snapshot',
+    'plot_timeline_health',
     'profile_series',
     'profile_dataframe',
     'summarize_profiles',

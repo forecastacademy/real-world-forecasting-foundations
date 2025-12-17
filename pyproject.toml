@@ -2,29 +2,36 @@
 name = "real-world-forecasting-foundations"
 version = "0.1.0"
 description = "TSForge: build powerful forecasting insights and pipelines in Python"
-authors = ["Jeff Tackes <tackes@gmail.com>", "Lindsay Truong <lindsayetruong@gmail.com>"]
-package-mode = false
+authors = [
+  "Jeff Tackes <tackes@gmail.com>",
+  "Lindsay Truong <lindsayetruong@gmail.com>",
+]
+readme = "README.md"
 
+# IMPORTANT: this must be enabled for an installable package
+package-mode = true
+
+# IMPORTANT: this maps the import name to the src layout
+packages = [
+  { include = "forecast_foundations", from = "src" }
+]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-pandas = "^2.2.3"
+
+# Core scientific stack
 numpy = "<2.1"
-scikit-learn = "^1.5.2"
+pandas = "^2.2.3"
 scipy = "^1.14.1"
+scikit-learn = "^1.5.2"
 statsmodels = "^0.14.3"
+
+# Plotting
 matplotlib = "^3.9.2"
 seaborn = "^0.13.2"
 plotly = "^6.5.0"
-datasetsforecast = { version = "^0.0.8", optional = true }
-pydantic = "^2.9.2"
-typer = "^0.12.5"
-rich = "^13.9.4"
-holidays = "^0.58"
-numba = "<0.60"
-llvmlite = "<0.43"
 
-# Nixtla stack (latest stable as of today)
+# Forecasting ecosystem
 statsforecast = "^2.0.3"
 mlforecast = "^1.0.2"
 neuralforecast = "^3.1.2"
@@ -36,16 +43,31 @@ lightgbm = "^4.5.0"
 xgboost = "^2.1.2"
 catboost = "^1.2.7"
 
-# Optional performance
-pyarrow = "17.0.0"
+# Utilities
+pydantic = "^2.9.2"
+typer = "^0.12.5"
+rich = "^13.9.4"
+holidays = "^0.58"
 joblib = "^1.4.2"
-nolds = "^0.6.2"
-tsforge = ">=0.1.0"
+# Pin to GitHub main branch to fix Python 3.11 importlib.resources bug (https://github.com/CSchoel/nolds/issues/80)
+nolds = { git = "https://github.com/CSchoel/nolds.git", branch = "main" }
+
+# Performance / compatibility
+numba = "<0.60"
+llvmlite = "<0.43"
+pyarrow = "17.0.0"
+
+# Teaching / datasets (optional)
+datasetsforecast = { version = "^0.0.8", optional = true }
+
+# PDF export (optional)
+weasyprint = { version = "^62.0", optional = true }
 
 [tool.poetry.extras]
+teaching = ["datasetsforecast"]
+pdf = ["weasyprint"]
 cli = ["typer", "rich"]
 docs = ["mkdocs", "mkdocs-material", "mkdocstrings"]
-teaching = ["datasetsforecast"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -54,10 +76,14 @@ ruff = "^0.6.9"
 mypy = "^1.11.2"
 jupyter = "^1.1.1"
 nbstripout = "^0.7.1"
+pre-commit = "^3.8.0"
 mkdocs = "^1.6.1"
 mkdocs-material = "^9.5.39"
-pre-commit = "^3.8.0"
 mkdocstrings = { extras = ["python"], version = "^0.26.2" }
+
+[tool.poetry.scripts]
+# CLI entrypoint (only if tsforge CLI lives inside this repo)
+tsf = "forecast_foundations.tsforge.cli.main:app"
 
 [tool.ruff]
 line-length = 100
@@ -68,11 +94,6 @@ quote-style = "double"
 
 [tool.mypy]
 ignore_missing_imports = true
-
-[tool.poetry.scripts]
-tsf = "tsforge.cli.main:app"   # `tsf` command if you enable Typer CLI
-
-#  poetry show --tree
 
 [build-system]
 requires = ["poetry-core>=1.8.0"]

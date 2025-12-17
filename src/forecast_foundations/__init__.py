@@ -38,7 +38,7 @@ from .loaders import (
 )
 
 from .features import aggregate_calendar_to_weekly
-
+from .version import __version__
 # =============================================================================
 # Cache Management
 # =============================================================================
@@ -47,7 +47,7 @@ from .cache.cache import CacheManager, ArtifactManager
 # =============================================================================
 # Reporting & Analysis
 # =============================================================================
-from .analysis.reports import first_contact_check, FirstContactReport
+from .analysis.reports import ModuleReport, Snapshot, plot_timeline_health
 from .analysis.profile import (
     acf_summary,
     profile_series,
@@ -117,3 +117,6 @@ __all__ = [
     'get_module_from_notebook',
     'get_artifact_subfolder',
 ]
+
+# Bootstrap (notebook setup)
+from .utils.bootstrap import setup_notebook, NotebookEnvironment

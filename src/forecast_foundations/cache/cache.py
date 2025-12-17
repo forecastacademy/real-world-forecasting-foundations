@@ -131,12 +131,13 @@ class CacheManager:
         module: Optional[str] = None,
         source: Optional[str] = None,
         report: Optional['FirstContactReport'] = None,
+        report_format: str = 'md',
         inherit_config: bool = True,
         overwrite: Optional[bool] = None
     ) -> Path:
         """
         Save DataFrame with automatic source and config inheritance.
-        
+
         Parameters
         ----------
         df : pd.DataFrame
@@ -151,6 +152,8 @@ class CacheManager:
             Parent cache key. Auto-detects from last load.
         report : FirstContactReport, optional
             Report to save alongside data
+        report_format : str, default='md'
+            Report output format: 'md' (markdown), 'txt' (plain text), 'pdf', or 'html'
         inherit_config : bool, default=True
             If True, inherit config from source
         overwrite : bool, optional
@@ -209,7 +212,8 @@ class CacheManager:
         # Save report if provided
         report_filename = None
         if report is not None:
-            report_filename = f"{key}.json"
+            report_ext = report_format if report_format in ('md', 'txt', 'pdf', 'html') else 'md'
+            report_filename = f"{key}_report.{report_ext}"
             report_path = self.cache_dir / report_filename
             report.save(report_path)
         
@@ -445,35 +449,35 @@ class CacheManager:
 
 class ArtifactManager:
     """
-    Manages curriculum artifacts with separate output/reports directories.
+    Manages curriculum artifacts with separate data/reports directories.
 
     Structure:
-        artifacts/
-        ├── 01_foundations/
-        │   ├── output/
-        │   │   └── 1_06.parquet             # Gitignored
-        │   ├── reports/
-        │   │   └── 1_06.json                # Tracked
-        │   └── manifest.json            # Tracked
-        └── manifest.json                # Global index
+        outputs/
+        ├── data/
+        │   └── 1_06_first_contact_output.parquet
+        ├── reports/
+        │   └── 1_06_first_contact.json
+        └── manifest.json
 
     Parameters
     ----------
-    artifacts_dir : Path
-        Root artifacts directory (e.g., PROJECT_ROOT / 'artifacts')
+    outputs_dir : Path
+        Root outputs directory (e.g., DATA_DIR / 'outputs')
 
     Examples
     --------
-    >>> artifacts = ArtifactManager(PROJECT_ROOT / 'artifacts')
-    >>> artifacts.save(df, report=report)  # Auto-detects 1_06, 01_foundations
-    >>> df, report = artifacts.load('1_06')
+    >>> artifacts = ArtifactManager(DATA_DIR / 'outputs')
+    >>> artifacts.save(df, report=report)  # Auto-detects notebook name
+    >>> df, report = artifacts.load('1_06_first_contact')
     """
 
-    def __init__(self, artifacts_dir: Path):
-        self.artifacts_dir = Path(artifacts_dir)
-        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.global_manifest_path = self.artifacts_dir / 'manifest.json'
-        self._global_manifest = self._load_json(self.global_manifest_path)
+    def __init__(self, outputs_dir: Path):
+        self.outputs_dir = Path(outputs_dir)
+        self.outputs_dir.mkdir(parents=True, exist_ok=True)
+        (self.outputs_dir / 'data').mkdir(exist_ok=True)
+        (self.outputs_dir / 'reports').mkdir(exist_ok=True)
+        self.manifest_path = self.outputs_dir / 'manifest.json'
+        self._manifest = self._load_json(self.manifest_path)
 
     @staticmethod
     def _load_json(path: Path) -> dict:
@@ -487,52 +491,32 @@ class ArtifactManager:
         with open(path, 'w') as f:
             json.dump(data, f, indent=2, default=str)
 
-    def _get_module_dir(self, subfolder: Optional[str] = None) -> Path:
-        """Get module directory, auto-detecting from notebook if needed."""
-        if subfolder is None:
-            subfolder = get_artifact_subfolder()
-            if subfolder is None:
-                raise ValueError("Could not auto-detect subfolder. Provide explicitly.")
-
-        module_dir = self.artifacts_dir / subfolder
-        module_dir.mkdir(parents=True, exist_ok=True)
-        (module_dir / 'output').mkdir(exist_ok=True)
-        (module_dir / 'reports').mkdir(exist_ok=True)
-        return module_dir
-
-    def _get_module_manifest(self, module_dir: Path) -> dict:
-        manifest_path = module_dir / 'manifest.json'
-        return self._load_json(manifest_path)
-
-    def _save_module_manifest(self, module_dir: Path, manifest: dict):
-        self._save_json(module_dir / 'manifest.json', manifest)
-
     def save(
         self,
         df: pd.DataFrame,
         key: Optional[str] = None,
-        subfolder: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         source: Optional[str] = None,
         report: Optional['FirstContactReport'] = None,
+        report_format: str = 'md',
     ) -> Path:
         """
-        Save DataFrame and optional report to artifacts.
+        Save DataFrame and optional report to outputs.
 
         Parameters
         ----------
         df : pd.DataFrame
             Data to save
         key : str, optional
-            Artifact key (e.g., '1_06'). Auto-detects from notebook.
-        subfolder : str, optional
-            Module subfolder (e.g., '01_foundations'). Auto-detects.
+            Artifact key (e.g., '1_06_first_contact'). Auto-detects from notebook.
         config : dict, optional
             Config metadata to store
         source : str, optional
             Source artifact key for lineage. Auto-detects from last load.
         report : FirstContactReport, optional
             Report to save alongside data
+        report_format : str, default='md'
+            Report output format: 'md' (markdown), 'txt' (plain text), 'pdf', or 'html'
 
         Returns
         -------
@@ -541,7 +525,7 @@ class ArtifactManager:
         """
         # Auto-detect key from notebook name
         if key is None:
-            key = get_module_from_notebook()
+            key = get_notebook_name()
             if key is None:
                 raise ValueError("Could not auto-detect key. Provide explicitly.")
 
@@ -549,26 +533,23 @@ class ArtifactManager:
         if source is None:
             source = _load_history[-1] if _load_history else None
 
-        # Get module directory
-        module_dir = self._get_module_dir(subfolder)
-        subfolder_name = module_dir.name
-
         # Save data
-        data_path = module_dir / 'output' / f'{key}.parquet'
+        data_filename = f'{key}_output.parquet'
+        data_path = self.outputs_dir / 'data' / data_filename
         df.to_parquet(data_path, index=False)
 
         # Save report
-        report_path = None
+        report_ext = report_format if report_format in ('md', 'txt', 'pdf', 'html') else 'md'
         if report is not None:
-            report_path = module_dir / 'reports' / f'{key}.json'
+            report_path = self.outputs_dir / 'reports' / f'{key}_report.{report_ext}'
             report.save(report_path)
 
-        # Update module manifest
-        module_manifest = self._get_module_manifest(module_dir)
-        module_manifest[key] = {
+        # Update manifest
+        report_file = f'reports/{key}_report.{report_ext}' if report else None
+        self._manifest[key] = {
             'key': key,
-            'data_file': f'output/{key}.parquet',
-            'report_file': f'reports/{key}.json' if report else None,
+            'data_file': f'data/{data_filename}',
+            'report_file': report_file,
             'config': config or {},
             'source': source,
             'created_at': datetime.now().isoformat(),
@@ -576,42 +557,28 @@ class ArtifactManager:
             'columns': list(df.columns),
             'size_mb': round(data_path.stat().st_size / 1024**2, 2),
         }
-        self._save_module_manifest(module_dir, module_manifest)
-
-        # Update global manifest
-        global_key = f'{subfolder_name}/{key}'
-        self._global_manifest[global_key] = {
-            'subfolder': subfolder_name,
-            'key': key,
-            'created_at': datetime.now().isoformat(),
-            'rows': len(df),
-            'has_report': report is not None,
-        }
-        self._save_json(self.global_manifest_path, self._global_manifest)
+        self._save_json(self.manifest_path, self._manifest)
 
         # Output
-        print(f"✓ Saved '{key}' → {subfolder_name}/")
-        print(f"   Data:   output/{key}.parquet ({module_manifest[key]['size_mb']} MB, {len(df):,} rows)")
+        print(f"✓ Saved '{key}'")
+        print(f"   Data:   data/{data_filename} ({self._manifest[key]['size_mb']} MB, {len(df):,} rows)")
         if report:
-            print(f"   Report: reports/{key}.json")
+            print(f"   Report: {report_file}")
 
         return data_path
 
     def load(
         self,
         key: str,
-        subfolder: Optional[str] = None,
         with_report: bool = False,
     ):
         """
-        Load DataFrame (and optional report) from artifacts.
+        Load DataFrame (and optional report) from outputs.
 
         Parameters
         ----------
         key : str
-            Artifact key (e.g., '1_06')
-        subfolder : str, optional
-            Module subfolder. Auto-detects from notebook.
+            Artifact key (e.g., '1_06_first_contact')
         with_report : bool, default=False
             Return (df, report) tuple
 
@@ -620,29 +587,26 @@ class ArtifactManager:
         pd.DataFrame or tuple
             Data, or (data, report) if with_report=True
         """
-        module_dir = self._get_module_dir(subfolder)
-        module_manifest = self._get_module_manifest(module_dir)
-
-        if key not in module_manifest:
-            print(f"⚠ Artifact '{key}' not found in {module_dir.name}/")
+        if key not in self._manifest:
+            print(f"⚠ Artifact '{key}' not found")
             return (None, None) if with_report else None
 
-        entry = module_manifest[key]
+        entry = self._manifest[key]
 
         # Load data
-        data_path = module_dir / entry['data_file']
+        data_path = self.outputs_dir / entry['data_file']
         if not data_path.exists():
             print(f"⚠ Data file missing: {data_path}")
             return (None, None) if with_report else None
 
         df = pd.read_parquet(data_path)
-        print(f"✓ Loaded '{key}' from {module_dir.name}/")
+        print(f"✓ Loaded '{key}'")
         print(f"   Shape: {len(df):,} × {len(df.columns)}")
 
         if with_report:
             report_obj = None
             if entry.get('report_file'):
-                report_path = module_dir / entry['report_file']
+                report_path = self.outputs_dir / entry['report_file']
                 if report_path.exists():
                     from ..analysis.reports import FirstContactReport
                     report_obj = FirstContactReport.load(report_path)
@@ -651,18 +615,15 @@ class ArtifactManager:
 
         return df
 
-    def info(self, key: str, subfolder: Optional[str] = None) -> Optional[dict]:
+    def info(self, key: str) -> Optional[dict]:
         """Print detailed info about an artifact."""
-        module_dir = self._get_module_dir(subfolder)
-        module_manifest = self._get_module_manifest(module_dir)
-
-        if key not in module_manifest:
+        if key not in self._manifest:
             print(f"⚠ Artifact '{key}' not found")
             return None
 
-        entry = module_manifest[key]
+        entry = self._manifest[key]
         print(f"\n{'='*60}")
-        print(f"ARTIFACT: {module_dir.name}/{key}")
+        print(f"ARTIFACT: {key}")
         print(f"{'='*60}")
         print(f"  Data:     {entry['data_file']}")
         print(f"  Report:   {entry.get('report_file') or 'None'}")
@@ -678,25 +639,14 @@ class ArtifactManager:
         print(f"{'='*60}\n")
         return entry
 
-    def list(self, subfolder: Optional[str] = None) -> pd.DataFrame:
-        """List artifacts in a module (or all if subfolder=None)."""
-        if subfolder:
-            module_dir = self._get_module_dir(subfolder)
-            module_manifest = self._get_module_manifest(module_dir)
-            rows = [{
-                'Key': key,
-                'Subfolder': subfolder,
-                'Rows': f"{e['rows']:,}",
-                'Size (MB)': e['size_mb'],
-                'Report': '✓' if e.get('report_file') else '-',
-            } for key, e in module_manifest.items()]
-        else:
-            rows = [{
-                'Key': e['key'],
-                'Subfolder': e['subfolder'],
-                'Rows': f"{e['rows']:,}",
-                'Report': '✓' if e.get('has_report') else '-',
-            } for key, e in self._global_manifest.items()]
+    def list(self) -> pd.DataFrame:
+        """List all artifacts."""
+        rows = [{
+            'Key': key,
+            'Rows': f"{e['rows']:,}",
+            'Size (MB)': e['size_mb'],
+            'Report': '✓' if e.get('report_file') else '-',
+        } for key, e in self._manifest.items()]
 
         if not rows:
             print("📦 No artifacts found.")
@@ -706,6 +656,42 @@ class ArtifactManager:
         print(f"\n📦 Artifacts ({len(df)}):\n")
         print(df.to_string(index=False))
         return df
+
+class NullCacheManager:
+    """
+    No-op cache used when use_cache=False.
+
+    Behaves like CacheManager but:
+    - load(...) always returns None
+    - save(...) does nothing
+
+    This allows notebook code to always call cache.load/save
+    without conditionals.
+    """
+
+    def __init__(self, cache_dir: Path, *args, **kwargs):
+        self.cache_dir = Path(cache_dir)
+
+    def load(self, *args, **kwargs):
+        return None
+
+    def save(self, *args, **kwargs):
+        return None
+
+    def exists(self, *args, **kwargs):
+        return False
+
+    def list(self):
+        return []
+
+    def info(self, *args, **kwargs):
+        return None
+
+    def lineage(self, *args, **kwargs):
+        return []
+
+    def clear(self, *args, **kwargs):
+        return None
 
 
 __all__ = ['CacheManager', 'CacheEntry', 'ArtifactManager']
