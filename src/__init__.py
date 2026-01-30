@@ -65,6 +65,11 @@ from .analysis.profile import (
 )
 
 # =============================================================================
+# Evaluation & Metrics
+# =============================================================================
+from .metrics import MetricsCalculator
+
+# =============================================================================
 # Helpers
 # =============================================================================
 from .utils.helpers import (
@@ -110,6 +115,8 @@ __all__ = [
     'calc_outlier_metrics',
     'ADI_THRESHOLD',
     'CV2_THRESHOLD',
+    # Evaluation & Metrics
+    'MetricsCalculator',
     # Helpers
     'find_project_root',
     'get_notebook_name',
