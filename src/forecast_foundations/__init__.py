@@ -42,7 +42,7 @@ from .version import __version__
 # =============================================================================
 # Cache Management
 # =============================================================================
-from .cache.cache import CacheManager, ArtifactManager, cached
+from .cache.cache import CacheManager, ArtifactManager
 
 # =============================================================================
 # Reporting & Analysis

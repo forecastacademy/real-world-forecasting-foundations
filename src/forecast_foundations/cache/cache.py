@@ -5,13 +5,12 @@ Cache Manager
 CacheManager for storing and tracking datasets with:
 - Automatic source/lineage tracking
 - Config inheritance from parent datasets
-- Report storage alongside data
 - Cross-manager config lookup
 
 ArtifactManager for curriculum outputs:
-- Separate output/ and reports/ directories
+- Separate output/ directory
 - Module-level manifest tracking
-- Simple filenames (1_06.parquet, 1_06.json)
+- Reports regenerated on load (no report files stored)
 """
 
 import json
@@ -52,7 +51,6 @@ class CacheEntry:
     columns: List[str]
     size_mb: float
     source: Optional[str] = None
-    report_filename: Optional[str] = None
 
 
 class CacheManager:
@@ -72,9 +70,9 @@ class CacheManager:
     >>> outputs = CacheManager(Path('data/outputs'))
     >>> 
     >>> # Save with auto-detected source and inherited config
-    >>> outputs.save(df, report=report, config={'freq': 'W'})
+    >>> outputs.save(df, config={'freq': 'W'})
     >>> 
-    >>> # Load with report
+    >>> # Load with report (regenerated on demand)
     >>> df, report = outputs.load('1_06_output', with_report=True)
     """
     
@@ -130,13 +128,12 @@ class CacheManager:
         config: Optional[Dict[str, Any]] = None,
         module: Optional[str] = None,
         source: Optional[str] = None,
-        report: Optional['ModuleReport'] = None,
         inherit_config: bool = True,
         overwrite: Optional[bool] = None
     ) -> Path:
         """
         Save DataFrame with automatic source and config inheritance.
-
+        
         Parameters
         ----------
         df : pd.DataFrame
@@ -149,8 +146,6 @@ class CacheManager:
             Module identifier. Auto-detects from notebook.
         source : str, optional
             Parent cache key. Auto-detects from last load.
-        report : ModuleReport, optional
-            Report to save alongside data (saved as txt)
         inherit_config : bool, default=True
             If True, inherit config from source
         overwrite : bool, optional
@@ -206,14 +201,7 @@ class CacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         df.to_parquet(filepath, index=False)
         
-        # Save report if provided
-        report_filename = None
-        if report is not None:
-            report_filename = f"{key}_report.txt"
-            report_path = self.cache_dir / report_filename
-            report.save(report_path)
-        
-        # Create manifest entry
+        # Create manifest entry (no report file - regenerated on load)
         entry = CacheEntry(
             key=key,
             filename=filename,
@@ -225,7 +213,6 @@ class CacheManager:
             columns=list(df.columns),
             size_mb=round(filepath.stat().st_size / 1024**2, 2),
             source=source,
-            report_filename=report_filename
         )
         
         self._manifest[key] = asdict(entry)
@@ -234,8 +221,6 @@ class CacheManager:
         # Output
         print(f"✓ Saved '{key}'")
         print(f"   Data:   {filename} ({entry.size_mb} MB, {entry.rows:,} rows)")
-        if report_filename:
-            print(f"   Report: {report_filename}")
         if source:
             print(f"   Source: {source}")
         if inherited_keys:
@@ -261,7 +246,7 @@ class CacheManager:
         config : dict, optional
             Validates against stored config
         with_report : bool, default=False
-            Return (df, report) tuple
+            Return (df, report) tuple. Report is regenerated on demand.
         verbose : bool, default=True
             Print loading info
             
@@ -301,17 +286,15 @@ class CacheManager:
             print(f"✓ Loaded '{key}'")
             print(f"   Module: {entry['module']} | Shape: {entry['rows']:,} × {len(entry['columns'])}")
         
-        # Load report if requested
+        # Regenerate report if requested
         if with_report:
-            report_obj = None
-            if entry.get('report_filename'):
-                report_path = self.cache_dir / entry['report_filename']
-                if report_path.exists():
-                    from ..reports import ModuleReport
-                    report_obj = ModuleReport.load(report_path)
-                    if verbose:
-                        print(f"   Report: ✓")
-            return df, report_obj
+            from ..reports import ModuleReport
+            # Extract module ID from key (e.g., "1.06_first_contact" -> "1.06")
+            module_id = entry.get('module', key.split('_')[0])
+            report = ModuleReport(module=module_id, input_df=df)
+            if verbose:
+                print(f"   Report: ✓ (regenerated)")
+            return df, report
         
         return df
     
@@ -340,7 +323,6 @@ class CacheManager:
         print(f"CACHE: {key}")
         print(f"{'='*60}")
         print(f"  Data:     {entry['filename']}")
-        print(f"  Report:   {entry.get('report_filename') or 'None'}")
         print(f"  Module:   {entry['module']}")
         print(f"  Created:  {entry['created_at'][:19]}")
         print(f"  Size:     {entry['size_mb']} MB")
@@ -364,7 +346,6 @@ class CacheManager:
             'Module': e['module'],
             'Rows': f"{e['rows']:,}",
             'Size (MB)': e['size_mb'],
-            'Report': '✓' if e.get('report_filename') else '-',
             'Source': e.get('source') or '-'
         } for key, e in self._manifest.items()]
         
@@ -400,20 +381,17 @@ class CacheManager:
             arrow = "→ " if i > 0 else ""
             
             module = '?'
-            has_report = False
             for manager in _all_managers:
                 if item in manager._manifest:
                     module = manager._manifest[item].get('module', '?')
-                    has_report = bool(manager._manifest[item].get('report_filename'))
                     break
             
-            report_icon = ' 📋' if has_report else ''
-            print(f"   {indent}{arrow}{item} ({module}){report_icon}")
+            print(f"   {indent}{arrow}{item} ({module})")
         
         return list(reversed(chain))
     
     def delete(self, key: str):
-        """Delete a cached dataset and its report."""
+        """Delete a cached dataset."""
         if key not in self._manifest:
             print(f"⚠ Cache '{key}' not found")
             return
@@ -423,11 +401,6 @@ class CacheManager:
         filepath = self.cache_dir / entry['filename']
         if filepath.exists():
             filepath.unlink()
-        
-        if entry.get('report_filename'):
-            report_path = self.cache_dir / entry['report_filename']
-            if report_path.exists():
-                report_path.unlink()
         
         del self._manifest[key]
         self._save_manifest()
@@ -442,99 +415,17 @@ class CacheManager:
             self.delete(key)
         print("✓ Cache cleared")
 
-    def cached(self, key: str, description: str = None, estimate: str = None):
-        """
-        Decorator that adds caching to any function.
-
-        Parameters
-        ----------
-        key : str
-            Cache key for storing the result
-        description : str, optional
-            Description shown during first computation
-        estimate : str, optional
-            Time estimate shown during first computation
-
-        Examples
-        --------
-        >>> from tsfeatures import tsfeatures
-        >>> tsfeatures = cache.cached("diagnostics", "Computing diagnostics")(tsfeatures)
-        >>> diagnostics = tsfeatures(weekly_df, freq=52, threads=8)
-        """
-        return cached(self, key, description, estimate)
-
-    def compute(
-        self,
-        key: str,
-        func,
-        *args,
-        description: str = None,
-        estimate: str = None,
-        **kwargs
-    ):
-        """
-        Run a function with automatic caching.
-
-        Parameters
-        ----------
-        key : str
-            Cache key for storing the result
-        func : callable
-            Function to call (e.g., tsfeatures)
-        *args, **kwargs
-            Arguments passed to the function
-        description : str, optional
-            Description shown during first computation
-        estimate : str, optional
-            Time estimate shown during first computation
-
-        Examples
-        --------
-        >>> diagnostics = cache.compute(
-        ...     "diagnostics",
-        ...     tsfeatures, weekly_df, freq=52, threads=8,
-        ...     description="Computing diagnostics",
-        ...     estimate="~10-15 min"
-        ... )
-        """
-        import time as _time
-
-        # Try cache first
-        result = self.load(key)
-        if result is not None:
-            return result
-
-        # Not cached - show banner
-        if description:
-            print("=" * 60)
-            print(f"⏳ FIRST RUN: {description}")
-            if estimate:
-                print(f"   {estimate}")
-            print("   Subsequent runs load instantly from cache.")
-            print("=" * 60)
-
-        # Compute
-        start = _time.time()
-        result = func(*args, **kwargs)
-        elapsed = _time.time() - start
-
-        # Save
-        self.save(result, key=key)
-        print(f"✓ Computed in {elapsed/60:.1f} min")
-
-        return result
-
 
 class ArtifactManager:
     """
-    Manages curriculum artifacts with separate data/reports directories.
+    Manages curriculum artifacts with separate data directory.
+
+    Reports are regenerated on load - no report files stored.
 
     Structure:
         output/
         ├── data/
         │   └── 1_06_first_contact_output.parquet
-        ├── reports/
-        │   └── 1_06_first_contact.json
         └── manifest.json
 
     Parameters
@@ -545,15 +436,14 @@ class ArtifactManager:
     Examples
     --------
     >>> artifacts = ArtifactManager(DATA_DIR / 'output')
-    >>> artifacts.save(df, report=report)  # Auto-detects notebook name
-    >>> df, report = artifacts.load('1_06_first_contact')
+    >>> artifacts.save(df)  # Auto-detects notebook name
+    >>> df, report = artifacts.load('1.06_first_contact', with_report=True)
     """
 
     def __init__(self, outputs_dir: Path):
         self.outputs_dir = Path(outputs_dir)
         self.outputs_dir.mkdir(parents=True, exist_ok=True)
         (self.outputs_dir / 'data').mkdir(exist_ok=True)
-        (self.outputs_dir / 'reports').mkdir(exist_ok=True)
         self.manifest_path = self.outputs_dir / 'manifest.json'
         self._manifest = self._load_json(self.manifest_path)
 
@@ -578,20 +468,20 @@ class ArtifactManager:
         report: Optional['ModuleReport'] = None,
     ) -> Path:
         """
-        Save DataFrame and optional report to outputs.
+        Save DataFrame to outputs.
 
         Parameters
         ----------
         df : pd.DataFrame
             Data to save
         key : str, optional
-            Artifact key (e.g., '1_06_first_contact'). Auto-detects from notebook.
+            Artifact key (e.g., '1.06_first_contact'). Auto-detects from notebook.
         config : dict, optional
             Config metadata to store
         source : str, optional
             Source artifact key for lineage. Auto-detects from last load.
         report : ModuleReport, optional
-            Report to save alongside data (saved as txt)
+            Report object (displayed but not saved - regenerated on load)
 
         Returns
         -------
@@ -608,22 +498,19 @@ class ArtifactManager:
         if source is None:
             source = _load_history[-1] if _load_history else None
 
+        # Extract module from key for manifest
+        module = key.split('_')[0] if '_' in key else key
+
         # Save data
         data_filename = f'{key}_output.parquet'
         data_path = self.outputs_dir / 'data' / data_filename
         df.to_parquet(data_path, index=False)
 
-        # Save report
-        if report is not None:
-            report_path = self.outputs_dir / 'reports' / f'{key}_report.txt'
-            report.save(report_path)
-
-        # Update manifest
-        report_file = f'reports/{key}_report.txt' if report else None
+        # Update manifest (no report file - regenerated on load)
         self._manifest[key] = {
             'key': key,
+            'module': module,
             'data_file': f'data/{data_filename}',
-            'report_file': report_file,
             'config': config or {},
             'source': source,
             'created_at': datetime.now().isoformat(),
@@ -635,9 +522,11 @@ class ArtifactManager:
 
         # Output
         print(f"✓ Saved '{key}'")
-        print(f"   Data:   data/{data_filename} ({self._manifest[key]['size_mb']} MB, {len(df):,} rows)")
-        if report:
-            print(f"   Report: {report_file}")
+        print(f"   Data: data/{data_filename} ({self._manifest[key]['size_mb']} MB, {len(df):,} rows)")
+
+        # Display report if provided (but don't save it)
+        if report is not None:
+            print(f"   Report: displayed (regenerate on load with with_report=True)")
 
         return data_path
 
@@ -652,9 +541,9 @@ class ArtifactManager:
         Parameters
         ----------
         key : str
-            Artifact key (e.g., '1_06_first_contact')
+            Artifact key (e.g., '1.06_first_contact')
         with_report : bool, default=False
-            Return (df, report) tuple
+            Return (df, report) tuple. Report is regenerated from data.
 
         Returns
         -------
@@ -674,18 +563,20 @@ class ArtifactManager:
             return (None, None) if with_report else None
 
         df = pd.read_parquet(data_path)
+        
+        # Track for lineage
+        _load_history.append(key)
+        
         print(f"✓ Loaded '{key}'")
         print(f"   Shape: {len(df):,} × {len(df.columns)}")
 
         if with_report:
-            report_obj = None
-            if entry.get('report_file'):
-                report_path = self.outputs_dir / entry['report_file']
-                if report_path.exists():
-                    from ..reports import ModuleReport
-                    report_obj = ModuleReport.load(report_path)
-                    print(f"   Report: ✓")
-            return df, report_obj
+            from ..reports import ModuleReport
+            # Extract module ID (e.g., "1.06")
+            module_id = entry.get('module', key.split('_')[0])
+            report = ModuleReport(module=module_id, input_df=df)
+            print(f"   Report: ✓ (regenerated)")
+            return df, report
 
         return df
 
@@ -700,7 +591,7 @@ class ArtifactManager:
         print(f"ARTIFACT: {key}")
         print(f"{'='*60}")
         print(f"  Data:     {entry['data_file']}")
-        print(f"  Report:   {entry.get('report_file') or 'None'}")
+        print(f"  Module:   {entry.get('module', 'unknown')}")
         print(f"  Created:  {entry['created_at'][:19]}")
         print(f"  Size:     {entry['size_mb']} MB")
         print(f"  Shape:    {entry['rows']:,} × {len(entry['columns'])}")
@@ -717,9 +608,9 @@ class ArtifactManager:
         """List all artifacts."""
         rows = [{
             'Key': key,
+            'Module': e.get('module', '-'),
             'Rows': f"{e['rows']:,}",
             'Size (MB)': e['size_mb'],
-            'Report': '✓' if e.get('report_file') else '-',
         } for key, e in self._manifest.items()]
 
         if not rows:
@@ -730,6 +621,7 @@ class ArtifactManager:
         print(f"\n📦 Artifacts ({len(df)}):\n")
         print(df.to_string(index=False))
         return df
+
 
 class NullCacheManager:
     """
@@ -768,74 +660,4 @@ class NullCacheManager:
         return None
 
 
-def cached(cache, key: str, description: str = None, estimate: str = None):
-    """
-    Decorator that adds caching to any function.
-
-    Wraps a function so that its result is automatically cached.
-    On first call, computes and caches; on subsequent calls, returns cached value.
-
-    Parameters
-    ----------
-    cache : CacheManager
-        Cache manager instance to use for storage
-    key : str
-        Cache key for storing the result
-    description : str, optional
-        Description shown during first computation (e.g., "Computing diagnostics")
-    estimate : str, optional
-        Time estimate shown during first computation (e.g., "~10-15 min for 30K series")
-
-    Returns
-    -------
-    decorator
-        A decorator that wraps the target function with caching
-
-    Examples
-    --------
-    >>> from tsfeatures import tsfeatures
-    >>>
-    >>> # Wrap tsfeatures with caching
-    >>> tsfeatures = ff.cached(
-    ...     cache,
-    ...     "diagnostics",
-    ...     "Computing diagnostics",
-    ...     "~10-15 min for 30K series"
-    ... )(tsfeatures)
-    >>>
-    >>> # Now just call normally - caching happens automatically
-    >>> diagnostics = tsfeatures(weekly_df, freq=52, threads=8)
-    """
-    import time as _time
-
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            # Try cache first
-            result = cache.load(key)
-            if result is not None:
-                return result
-
-            # Not cached - show banner
-            if description:
-                print("=" * 60)
-                print(f"⏳ FIRST RUN: {description}")
-                if estimate:
-                    print(f"   {estimate}")
-                print("   Subsequent runs load instantly from cache.")
-                print("=" * 60)
-
-            # Compute
-            start = _time.time()
-            result = func(*args, **kwargs)
-            elapsed = _time.time() - start
-
-            # Save to cache
-            cache.save(result, key=key)
-            print(f"✓ Computed in {elapsed/60:.1f} min")
-
-            return result
-        return wrapper
-    return decorator
-
-
-__all__ = ['CacheManager', 'CacheEntry', 'ArtifactManager', 'cached']
+__all__ = ['CacheManager', 'CacheEntry', 'ArtifactManager', 'NullCacheManager']
