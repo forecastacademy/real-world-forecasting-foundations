@@ -722,6 +722,25 @@ class MetricsCalculator:
             )
             portfolio["beat_rate"] = (beat_agg["beat_sum"] / beat_agg["beat_count"]) * 100
 
+        if "fva" in metrics:
+            # Recompute FVA from aggregated WMAPE at portfolio level
+            wmape_agg = metric_level_df.groupby(self.model_col).agg(
+                _total_abs_error=("abs_error", "sum"),
+                _total_actual=("sum_actual", "sum"),
+            )
+            wmape_agg["wmape"] = wmape_agg["_total_abs_error"] / wmape_agg["_total_actual"]
+
+            anchor_wmape = wmape_agg.loc[self.anchor_model, "wmape"]
+
+            if self.fva_relative:
+                portfolio["fva"] = np.where(
+                    anchor_wmape != 0,
+                    ((anchor_wmape - wmape_agg["wmape"]) / anchor_wmape) * 100,
+                    np.nan,
+                )
+            else:
+                portfolio["fva"] = anchor_wmape - wmape_agg["wmape"]
+
         return portfolio.reset_index()
 
     # ========================================================================
