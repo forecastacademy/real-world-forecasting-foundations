@@ -551,6 +551,55 @@ class MetricsCalculator:
 
         return df
 
+    def _compute_fva(self, df: pd.DataFrame, metric_level: str) -> pd.DataFrame:
+        """
+        Compute FVA (Forecast Value Add) against anchor model.
+
+        FVA = anchor_model_wmape - model_wmape (in percentage points by default)
+        When fva_relative=True: FVA = (anchor_wmape - model_wmape) / anchor_wmape × 100
+
+        Comparison done within each cutoff. At finalize/portfolio/segment stages,
+        FVA is recomputed from aggregated WMAPE values to ensure proper weighting.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Aggregated data with wmape column.
+        metric_level : str
+            The metric_level column name (e.g., "item_id").
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with added fva column.
+        """
+        # Get anchor WMAPE per (metric_level, cutoff)
+        merge_keys = [metric_level, self.cutoff_col]
+
+        anchor_wmape = (
+            df[df[self.model_col] == self.anchor_model]
+            [merge_keys + ["wmape"]]
+            .rename(columns={"wmape": "anchor_wmape"})
+        )
+
+        # Merge and compute FVA
+        df = df.merge(anchor_wmape, on=merge_keys, how="left")
+
+        if self.fva_relative:
+            df = df.assign(
+                fva=lambda x: np.where(
+                    x["anchor_wmape"] != 0,
+                    ((x["anchor_wmape"] - x["wmape"]) / x["anchor_wmape"]) * 100,
+                    np.nan,
+                )
+            )
+        else:
+            df = df.assign(fva=lambda x: x["anchor_wmape"] - x["wmape"])
+
+        df = df.drop(columns=["anchor_wmape"])
+
+        return df
+
     def _compute_jitter(
         self, df: pd.DataFrame, metric_level: str
     ) -> pd.DataFrame:
