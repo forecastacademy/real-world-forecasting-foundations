@@ -49,7 +49,7 @@ DEFAULT_TARGET_COL = "y"
 DEFAULT_CUTOFF_COL = "cutoff"
 DEFAULT_MODEL_COL = "model"
 
-VALID_METRICS = {"wmape", "bias", "jitter", "beat_rate"}
+VALID_METRICS = {"wmape", "bias", "jitter", "beat_rate", "fva"}
 
 
 # ============================================================================
@@ -63,9 +63,11 @@ class MetricResults(BaseModel):
     Attributes
     ----------
     metric_level : pd.DataFrame
-        Detail metrics at metric_level × model × cutoff grain.
-        Columns include: metric_level, model, cutoff, sum_forecast,
-        sum_actual, error, abs_error, wmape, bias, beat_indicator, jitter
+        Detail metrics at metric_level × model grain (cutoff removed to ensure
+        single summary per groupbykeys). Jitter computed across all cutoffs;
+        beat_rate averaged across cutoffs (0-1 scale).
+        Columns include: metric_level, model, sum_forecast, sum_actual, error,
+        abs_error, wmape, bias, beat_rate, jitter
     portfolio : pd.DataFrame
         Portfolio summary aggregated to model level.
         Columns include: model, wmape, bias, jitter, beat_rate
@@ -114,6 +116,7 @@ class MetricsCalculator:
         target_col: str = DEFAULT_TARGET_COL,
         cutoff_col: str = DEFAULT_CUTOFF_COL,
         model_col: str = DEFAULT_MODEL_COL,
+        fva_relative: bool = False,
     ):
         """Initialize MetricsCalculator with configuration."""
         self.anchor_model = anchor_model
@@ -122,6 +125,7 @@ class MetricsCalculator:
         self.target_col = target_col
         self.cutoff_col = cutoff_col
         self.model_col = model_col
+        self.fva_relative = fva_relative
 
     # ========================================================================
     # Main Orchestration
@@ -134,7 +138,6 @@ class MetricsCalculator:
         metric_level: str,
         timesteps: Optional[List[Tuple[int, int]]] = None,
         metrics: List[str] = ["wmape", "bias", "jitter", "beat_rate"],
-        group_by_cutoff: bool = True,
     ) -> MetricResults:
         """
         Compute metrics at flexible grains with time filtering.
@@ -143,7 +146,7 @@ class MetricsCalculator:
         1. Filter by timesteps (if provided)
         2. Aggregate from error_level to metric_level (sum forecasts/actuals)
         3. Compute errors at metric_level grain
-        4. Compute requested metrics
+        4. Compute requested metrics (jitter always across all cutoffs)
         5. Aggregate to portfolio (model) level
 
         Parameters
@@ -164,17 +167,19 @@ class MetricsCalculator:
         metrics : list[str], default=["wmape", "bias", "jitter", "beat_rate"]
             Metrics to compute. Must be subset of
             {"wmape", "bias", "jitter", "beat_rate"}.
-        group_by_cutoff : bool, default=True
-            If True, metric_level results grouped by (metric_level, model, cutoff).
-            If False, aggregated to (metric_level, model) across all cutoffs.
 
         Returns
         -------
         MetricResults
             Container with:
-            - metric_level: DataFrame at metric_level × model × cutoff grain (if group_by_cutoff=True)
-              or metric_level × model grain (if group_by_cutoff=False)
+            - metric_level: DataFrame at metric_level × model grain (cutoff removed from
+              final output; jitter computed across all cutoffs)
             - portfolio: DataFrame at model level with aggregated metrics
+
+        Raises
+        ------
+        ValueError
+            If jitter or beat_rate requested but cutoff_col not found in dataframe.
         """
         # Validate inputs
         invalid = set(metrics) - VALID_METRICS
@@ -184,36 +189,45 @@ class MetricsCalculator:
                 f"Must be subset of {VALID_METRICS}"
             )
 
+        # Validate cutoff column exists if jitter or beat_rate requested
+        if ("jitter" in metrics or "beat_rate" in metrics) and self.cutoff_col not in df.columns:
+            raise ValueError(
+                f"Metrics {[m for m in ['jitter', 'beat_rate'] if m in metrics]} "
+                f"require cutoff column '{self.cutoff_col}' which not found in dataframe. "
+                f"Available columns: {list(df.columns)}"
+            )
+
         # Step 1: Filter by timesteps
         df_filtered = self._filter_by_timesteps(df, timesteps)
 
         # Step 2: Aggregate to metric_level and compute errors
-        agg_df = self._aggregate_to_metric_level(
-            df_filtered, metric_level, group_by_cutoff=group_by_cutoff
-        )
+        agg_df = self._aggregate_to_metric_level(df_filtered, metric_level)
         agg_df = self._compute_aggregated_errors(agg_df)
 
         # Step 3: Compute requested metrics
         metric_level_df = agg_df.copy()
-
+        
+        drop_cols = []
         if "wmape" in metrics:
             metric_level_df = self._compute_wmape(metric_level_df)
-
+            drop_cols.extend(['sum_forecast','sum_actual','abs_error','error'])
         if "bias" in metrics:
             metric_level_df = self._compute_bias(metric_level_df)
 
         if "beat_rate" in metrics:
-            metric_level_df = self._compute_beat_rate(
-                metric_level_df, metric_level, group_by_cutoff=group_by_cutoff
-            )
-
+            metric_level_df = self._compute_beat_rate(metric_level_df, metric_level)
+            drop_cols.extend(['beat_count','beat_sum'])
         if "jitter" in metrics:
-            metric_level_df = self._compute_jitter(
-                metric_level_df, metric_level, group_by_cutoff=group_by_cutoff
-            )
+            metric_level_df = self._compute_jitter(metric_level_df, metric_level)
 
-        # Step 4: Aggregate to portfolio (model) level
+        # Step 4: Remove cutoff from final metric_level_df to ensure single summary per groupbykeys
+        # (metric_level, model are the groupby keys; cutoff is only used for internal computation)
+        metric_level_df = self._finalize_metric_level(metric_level_df, metric_level)
+
+        # Step 5: Aggregate to portfolio (model) level
         portfolio_df = self._aggregate_to_portfolio(metric_level_df, metrics)
+
+        metric_level_df = metric_level_df.drop(drop_cols,axis=1)
 
         return MetricResults(metric_level=metric_level_df, portfolio=portfolio_df)
 
@@ -223,13 +237,13 @@ class MetricsCalculator:
         metric_levels: Dict[str, str],
         timesteps: Optional[List[Tuple[int, int]]] = None,
         metrics: List[str] = ["wmape", "bias", "jitter", "beat_rate"],
-        group_by_cutoff: bool = True,
     ) -> Dict[str, MetricResults]:
         """
         Compute metrics for multiple metric_level grains in one call.
 
         Takes a dictionary of error_level:metric_level pairs and returns
-        a dictionary of MetricResults, one per grain.
+        a dictionary of MetricResults, one per grain. Cutoff removed from
+        final output; jitter computed across all cutoffs.
 
         Parameters
         ----------
@@ -243,9 +257,6 @@ class MetricsCalculator:
             Time ranges to include. Each tuple is (start_week, end_week).
         metrics : list[str], default=["wmape", "bias", "jitter", "beat_rate"]
             Metrics to compute for all grains.
-        group_by_cutoff : bool, default=True
-            If True, include cutoff in metric_level grouping.
-            If False, aggregate across cutoffs.
 
         Returns
         -------
@@ -256,7 +267,7 @@ class MetricsCalculator:
         Raises
         ------
         ValueError
-            If metric_levels is empty.
+            If metric_levels is empty or jitter requested without cutoff column.
         """
         if not metric_levels:
             raise ValueError("metric_levels dictionary cannot be empty")
@@ -270,7 +281,6 @@ class MetricsCalculator:
                 metric_level=metric_level,
                 timesteps=timesteps,
                 metrics=metrics,
-                group_by_cutoff=group_by_cutoff,
             )
 
         return results
@@ -328,15 +338,13 @@ class MetricsCalculator:
         self,
         df: pd.DataFrame,
         metric_level: str,
-        group_by_cutoff: bool = True,
     ) -> pd.DataFrame:
         """
         Aggregate from error_level to metric_level.
 
-        Groups by (metric_level, model, cutoff) if group_by_cutoff=True,
-        or (metric_level, model) if group_by_cutoff=False.
-        Sums forecasts/actuals. Applies hygiene filter to exclude windows
-        with zero actual demand.
+        Groups by (metric_level, model, cutoff). Sums forecasts/actuals.
+        Applies hygiene filter to exclude windows with zero actual demand.
+        Cutoff is kept for internal metric computation and removed in final output.
 
         Parameters
         ----------
@@ -344,27 +352,20 @@ class MetricsCalculator:
             Filtered backtest data.
         metric_level : str
             Column to aggregate to (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, include cutoff in grouping. If False, aggregate across cutoffs.
 
         Returns
         -------
         pd.DataFrame
-            Aggregated data with columns: metric_level, model, [cutoff,]
+            Aggregated data with columns: metric_level, model, cutoff,
             sum_forecast, sum_actual.
         """
-        group_cols = [metric_level, self.model_col]
-        if group_by_cutoff:
-            group_cols.append(self.cutoff_col)
+        group_cols = [metric_level, self.model_col, self.cutoff_col]
 
         agg_df = (
             df.groupby(group_cols, as_index=False)
             .agg(sum_forecast=("y_pred", "sum"), sum_actual=(self.target_col, "sum"))
             .copy()
         )
-
-        # Hygiene: exclude zero demand (WMAPE/bias undefined)
-        agg_df = agg_df.query("sum_actual > 0").copy()
 
         return agg_df
 
@@ -389,6 +390,70 @@ class MetricsCalculator:
         )
 
         return agg_df
+
+    def _finalize_metric_level(
+        self,
+        metric_level_df: pd.DataFrame,
+        metric_level: str,
+    ) -> pd.DataFrame:
+        """
+        Finalize metric_level dataframe by removing cutoff column.
+
+        Ensures a single summary row per (metric_level, model) groupby keys.
+        Cutoff is used internally for metric computation but not included in final output.
+        Sums base columns across cutoffs and recomputes wmape/bias; averages beat_rate.
+
+        Parameters
+        ----------
+        metric_level_df : pd.DataFrame
+            Computed metrics at (metric_level, model, cutoff) grain.
+        metric_level : str
+            The metric_level column name (e.g., "item_id").
+
+        Returns
+        -------
+        pd.DataFrame
+            Metric dataframe with cutoff removed, aggregated to
+            (metric_level, model) grain. wmape/bias recomputed from sums;
+            beat_rate averaged across cutoffs.
+        """
+        # Define groupby keys (exclude cutoff)
+        groupby_keys = [metric_level, self.model_col]
+
+        # Sum base columns across cutoffs; jitter stays same (already cross-cutoff)
+        # Use named aggregation syntax to rename columns during aggregation
+        metric_level_df = (
+            metric_level_df.groupby(groupby_keys, as_index=False)
+            .agg(
+                sum_forecast=("sum_forecast", "sum"),
+                sum_actual=("sum_actual", "sum"),
+                error=("error", "sum"),
+                abs_error=("abs_error", "sum"),
+                beat_sum=("beat_indicator", "sum"),      # Sum indicators, rename to beat_sum
+                beat_count=("beat_count", "sum"),        # Sum counts for weighting
+                jitter=("jitter", "first"),              # Already computed as std across cutoffs
+            )
+            .copy()
+        )
+
+        # Recompute wmape and bias from aggregated base columns
+        if "wmape" in metric_level_df.columns or "abs_error" in metric_level_df.columns:
+            metric_level_df = metric_level_df.assign(
+                wmape=lambda x: x["abs_error"] / x["sum_actual"]
+            )
+
+        if "bias" in metric_level_df.columns or "error" in metric_level_df.columns:
+            metric_level_df = metric_level_df.assign(
+                bias=lambda x: x["error"] / x["sum_actual"]
+            )
+
+        # Compute beat_rate from aggregated sums (proper weighting across cutoffs)
+        if "beat_sum" in metric_level_df.columns:
+            metric_level_df = metric_level_df.assign(
+                beat_rate=lambda x: x["beat_sum"] / x["beat_count"]
+            )
+
+        return metric_level_df
 
     # ========================================================================
     # Metrics Computation
@@ -438,12 +503,13 @@ class MetricsCalculator:
         return df
 
     def _compute_beat_rate(
-        self, df: pd.DataFrame, metric_level: str, group_by_cutoff: bool = True
+        self, df: pd.DataFrame, metric_level: str
     ) -> pd.DataFrame:
         """
         Compute beat rate against anchor model.
 
         A model "beats" the anchor if its WMAPE is lower.
+        Comparison done within each cutoff.
 
         Parameters
         ----------
@@ -451,18 +517,14 @@ class MetricsCalculator:
             Aggregated data with wmape column.
         metric_level : str
             The metric_level column name (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, compare within each cutoff. If False, compare overall.
 
         Returns
         -------
         pd.DataFrame
             Input with added beat_indicator column (0/1).
         """
-        # Get anchor performance
-        merge_keys = [metric_level]
-        if group_by_cutoff:
-            merge_keys.append(self.cutoff_col)
+        # Get anchor performance (compare within each cutoff)
+        merge_keys = [metric_level, self.cutoff_col]
 
         anchor_wmape = (
             df[df[self.model_col] == self.anchor_model]
@@ -481,19 +543,21 @@ class MetricsCalculator:
             beat_indicator=lambda x: (x["wmape"] < x["anchor_wmape"]).astype(int)
         )
 
+        df = df.assign(
+            beat_count=1  # Count observations for proper aggregation across cutoffs
+        )
+
         df = df.drop(columns=["anchor_wmape"])
 
         return df
 
     def _compute_jitter(
-        self, df: pd.DataFrame, metric_level: str, group_by_cutoff: bool = True
+        self, df: pd.DataFrame, metric_level: str
     ) -> pd.DataFrame:
         """
         Compute JITTER (stability of WMAPE across cutoffs).
 
-        For each (model, metric_level_item): std(wmape across cutoffs).
-        When group_by_cutoff=False, jitter is set to NaN since there's only
-        one wmape value per series.
+        For each (model, metric_level_item): std(wmape across all cutoffs).
 
         Parameters
         ----------
@@ -501,32 +565,26 @@ class MetricsCalculator:
             Aggregated data with wmape column.
         metric_level : str
             The metric_level column name (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, compute std across cutoffs. If False, set to NaN.
 
         Returns
         -------
         pd.DataFrame
-            Input with added jitter column (std of wmape per series, or NaN).
+            Input with added jitter column (std of wmape across all cutoffs per series).
         """
-        if group_by_cutoff:
-            # Compute jitter per series (std across cutoffs)
-            series_jitter = (
-                df.groupby([self.model_col, metric_level])["wmape"]
-                .std()
-                .reset_index()
-                .rename(columns={"wmape": "jitter"})
-            )
+        # Always compute jitter per series (std across all cutoffs)
+        series_jitter = (
+            df.groupby([self.model_col, metric_level])["wmape"]
+            .std()
+            .reset_index()
+            .rename(columns={"wmape": "jitter"})
+        )
 
-            # Merge back to detail
-            df = df.merge(
-                series_jitter,
-                on=[self.model_col, metric_level],
-                how="left",
-            )
-        else:
-            # No variation across cutoffs when aggregated, set to NaN
-            df = df.assign(jitter=np.nan)
+        # Merge back to detail
+        df = df.merge(
+            series_jitter,
+            on=[self.model_col, metric_level],
+            how="left",
+        )
 
         return df
 
@@ -577,11 +635,12 @@ class MetricsCalculator:
             portfolio["jitter"] = jitter_agg
 
         if "beat_rate" in metrics:
-            # Fraction of items that beat anchor
-            beat_rate_agg = metric_level_df.groupby(self.model_col)[
-                "beat_indicator"
-            ].mean()
-            portfolio["beat_rate"] = beat_rate_agg * 100
+            # Recompute beat_rate from raw sums to maintain proper weighting
+            beat_agg = metric_level_df.groupby(self.model_col).agg(
+                beat_sum=("beat_sum", "sum"),
+                beat_count=("beat_count", "sum"),
+            )
+            portfolio["beat_rate"] = (beat_agg["beat_sum"] / beat_agg["beat_count"]) * 100
 
         return portfolio.reset_index()
 
@@ -657,15 +716,17 @@ class MetricsCalculator:
                 )
 
             if "beat_rate" in metrics:
-                # Fraction of (segment, model, cutoff) combos that beat anchor
-                beat_per_combo = (
-                    df.groupby([segment_col, self.model_col])["beat_indicator"].mean()
-                    * 100
+                # Recompute beat_rate from raw sums at segment level
+                beat_per_segment = df.groupby([segment_col, self.model_col]).agg(
+                    beat_sum=("beat_sum", "sum"),
+                    beat_count=("beat_count", "sum"),
                 )
+                beat_per_segment["beat_rate"] = (
+                    beat_per_segment["beat_sum"] / beat_per_segment["beat_count"]
+                ) * 100
+
                 segment_df = segment_df.merge(
-                    beat_per_combo.reset_index().rename(
-                        columns={"beat_indicator": "beat_rate"}
-                    ),
+                    beat_per_segment[["beat_rate"]].reset_index(),
                     on=[segment_col, self.model_col],
                 )
 
