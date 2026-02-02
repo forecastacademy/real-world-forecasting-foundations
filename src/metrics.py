@@ -12,7 +12,7 @@ Features
 --------
 - Flexible error and metric grain aggregation
 - Time-based filtering (horizons, timesteps)
-- Four core metrics: WMAPE, BIAS, JITTER, BEAT_RATE
+- Five core metrics: WMAPE, BIAS, JITTER, BEAT_RATE, FVA
 - Dual-grain output: detail metrics + portfolio summary
 - Segment analysis for slicing by business dimensions
 
@@ -25,7 +25,7 @@ Usage
     ...     error_level="unique_id",
     ...     metric_level="item_id",
     ...     timesteps=[(5, 13)],
-    ...     metrics=["wmape", "bias", "jitter", "beat_rate"]
+    ...     metrics=["wmape", "bias", "jitter", "beat_rate", "fva"]
     ... )
     >>> results.metric_level  # item_id × model × cutoff
     >>> results.portfolio     # model level
@@ -67,10 +67,10 @@ class MetricResults(BaseModel):
         single summary per groupbykeys). Jitter computed across all cutoffs;
         beat_rate averaged across cutoffs (0-1 scale).
         Columns include: metric_level, model, sum_forecast, sum_actual, error,
-        abs_error, wmape, bias, beat_rate, jitter
+        abs_error, wmape, bias, beat_rate, beat_sum, beat_count, fva, jitter
     portfolio : pd.DataFrame
         Portfolio summary aggregated to model level.
-        Columns include: model, wmape, bias, jitter, beat_rate
+        Columns include: model, wmape, bias, jitter, beat_rate, fva
     """
     metric_level: pd.DataFrame
     portfolio: pd.DataFrame
