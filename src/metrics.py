@@ -217,6 +217,8 @@ class MetricsCalculator:
         if "beat_rate" in metrics:
             metric_level_df = self._compute_beat_rate(metric_level_df, metric_level)
             drop_cols.extend(['beat_count','beat_sum'])
+        if "fva" in metrics:
+            metric_level_df = self._compute_fva(metric_level_df, metric_level)
         if "jitter" in metrics:
             metric_level_df = self._compute_jitter(metric_level_df, metric_level)
 
