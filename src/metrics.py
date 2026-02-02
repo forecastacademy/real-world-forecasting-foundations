@@ -455,6 +455,35 @@ class MetricsCalculator:
                 beat_rate=lambda x: x["beat_sum"] / x["beat_count"]
             )
 
+        # Recompute FVA from aggregated WMAPE values (proper weighting across cutoffs)
+        if "fva" in metric_level_df.columns:
+            # Get anchor WMAPE per metric_level (after aggregation)
+            anchor_df = metric_level_df[
+                metric_level_df[self.model_col] == self.anchor_model
+            ].copy()
+            anchor_wmape = anchor_df[[metric_level, "wmape"]].rename(
+                columns={"wmape": "anchor_wmape"}
+            )
+
+            # Merge anchor WMAPE back to all models
+            metric_level_df = metric_level_df.merge(anchor_wmape, on=metric_level, how="left")
+
+            # Compute FVA with divide-by-zero protection
+            if self.fva_relative:
+                metric_level_df = metric_level_df.assign(
+                    fva=lambda x: np.where(
+                        x["anchor_wmape"] != 0,
+                        ((x["anchor_wmape"] - x["wmape"]) / x["anchor_wmape"]) * 100,
+                        np.nan,
+                    )
+                )
+            else:
+                metric_level_df = metric_level_df.assign(
+                    fva=lambda x: x["anchor_wmape"] - x["wmape"]
+                )
+
+            metric_level_df = metric_level_df.drop(columns=["anchor_wmape"])
+
         return metric_level_df
 
     # ========================================================================
