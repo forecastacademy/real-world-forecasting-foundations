@@ -422,19 +422,28 @@ class MetricsCalculator:
         # Define groupby keys (exclude cutoff)
         groupby_keys = [metric_level, self.model_col]
 
+        # Build aggregation dict conditionally for columns that exist
+        agg_dict = {
+            "sum_forecast": ("sum_forecast", "sum"),
+            "sum_actual": ("sum_actual", "sum"),
+            "error": ("error", "sum"),
+            "abs_error": ("abs_error", "sum"),
+        }
+
+        if "beat_indicator" in metric_level_df.columns:
+            agg_dict["beat_sum"] = ("beat_indicator", "sum")
+        if "beat_count" in metric_level_df.columns:
+            agg_dict["beat_count"] = ("beat_count", "sum")
+        if "jitter" in metric_level_df.columns:
+            agg_dict["jitter"] = ("jitter", "first")
+        if "fva" in metric_level_df.columns:
+            agg_dict["fva"] = ("fva", "first")  # Keep first value for recomputation later
+
         # Sum base columns across cutoffs; jitter stays same (already cross-cutoff)
         # Use named aggregation syntax to rename columns during aggregation
         metric_level_df = (
             metric_level_df.groupby(groupby_keys, as_index=False)
-            .agg(
-                sum_forecast=("sum_forecast", "sum"),
-                sum_actual=("sum_actual", "sum"),
-                error=("error", "sum"),
-                abs_error=("abs_error", "sum"),
-                beat_sum=("beat_indicator", "sum"),      # Sum indicators, rename to beat_sum
-                beat_count=("beat_count", "sum"),        # Sum counts for weighting
-                jitter=("jitter", "first"),              # Already computed as std across cutoffs
-            )
+            .agg(**agg_dict)
             .copy()
         )
 
@@ -722,7 +731,7 @@ class MetricsCalculator:
             )
             portfolio["beat_rate"] = (beat_agg["beat_sum"] / beat_agg["beat_count"]) * 100
 
-        if "fva" in metrics:
+        if "fva" in metrics and "abs_error" in metric_level_df.columns:
             # Recompute FVA from aggregated WMAPE at portfolio level
             wmape_agg = metric_level_df.groupby(self.model_col).agg(
                 _total_abs_error=("abs_error", "sum"),
@@ -795,26 +804,39 @@ class MetricsCalculator:
         segment_results = {}
 
         for segment_col in segment_cols:
+            # Build aggregation dict conditionally for columns that exist
+            segment_agg_dict = {}
+            if "abs_error" in df.columns:
+                segment_agg_dict["_total_abs_error"] = ("abs_error", "sum")
+            if "error" in df.columns:
+                segment_agg_dict["_total_error"] = ("error", "sum")
+            if "sum_actual" in df.columns:
+                segment_agg_dict["_total_actual"] = ("sum_actual", "sum")
+
+            # If no columns to aggregate, use first() to keep structure
+            if not segment_agg_dict:
+                segment_agg_dict["_placeholder"] = (segment_col, "first")
+
             segment_df = (
                 df.groupby([segment_col, self.model_col], as_index=False)
-                .agg(
-                    _total_abs_error=("abs_error", "sum"),
-                    _total_error=("error", "sum"),
-                    _total_actual=("sum_actual", "sum"),
-                )
+                .agg(**segment_agg_dict)
             )
 
-            if "wmape" in metrics:
+            # Remove placeholder if it was created
+            if "_placeholder" in segment_df.columns:
+                segment_df = segment_df.drop(columns=["_placeholder"])
+
+            if "wmape" in metrics and "_total_abs_error" in segment_df.columns:
                 segment_df["wmape"] = (
                     segment_df["_total_abs_error"] / segment_df["_total_actual"]
                 )
 
-            if "bias" in metrics:
+            if "bias" in metrics and "_total_error" in segment_df.columns:
                 segment_df["bias"] = (
                     segment_df["_total_error"] / segment_df["_total_actual"]
                 )
 
-            if "beat_rate" in metrics:
+            if "beat_rate" in metrics and "beat_sum" in df.columns:
                 # Recompute beat_rate from raw sums at segment level
                 beat_per_segment = df.groupby([segment_col, self.model_col]).agg(
                     beat_sum=("beat_sum", "sum"),
@@ -829,7 +851,7 @@ class MetricsCalculator:
                     on=[segment_col, self.model_col],
                 )
 
-            if "fva" in metrics:
+            if "fva" in metrics and "abs_error" in df.columns and "sum_actual" in df.columns:
                 # Recompute FVA from aggregated WMAPE at segment level
                 segment_wmape = df.groupby([segment_col, self.model_col]).agg(
                     _total_abs_error=("abs_error", "sum"),
