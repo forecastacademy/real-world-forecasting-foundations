@@ -829,6 +829,44 @@ class MetricsCalculator:
                     on=[segment_col, self.model_col],
                 )
 
+            if "fva" in metrics:
+                # Recompute FVA from aggregated WMAPE at segment level
+                segment_wmape = df.groupby([segment_col, self.model_col]).agg(
+                    _total_abs_error=("abs_error", "sum"),
+                    _total_actual=("sum_actual", "sum"),
+                ).reset_index()
+                segment_wmape["wmape"] = (
+                    segment_wmape["_total_abs_error"] / segment_wmape["_total_actual"]
+                )
+
+                # Get anchor WMAPE per segment
+                anchor_by_segment = segment_wmape[
+                    segment_wmape[self.model_col] == self.anchor_model
+                ].copy()
+                anchor_by_segment = anchor_by_segment[[segment_col, "wmape"]].rename(
+                    columns={"wmape": "anchor_wmape"}
+                )
+
+                segment_wmape = segment_wmape.merge(anchor_by_segment, on=segment_col, how="left")
+
+                if self.fva_relative:
+                    segment_wmape["fva"] = np.where(
+                        segment_wmape["anchor_wmape"] != 0,
+                        (
+                            (segment_wmape["anchor_wmape"] - segment_wmape["wmape"])
+                            / segment_wmape["anchor_wmape"]
+                        )
+                        * 100,
+                        np.nan,
+                    )
+                else:
+                    segment_wmape["fva"] = segment_wmape["anchor_wmape"] - segment_wmape["wmape"]
+
+                segment_df = segment_df.merge(
+                    segment_wmape[[segment_col, self.model_col, "fva"]],
+                    on=[segment_col, self.model_col],
+                )
+
             # Clean up temp columns
             temp_cols = [c for c in segment_df.columns if c.startswith("_")]
             segment_df = segment_df.drop(columns=temp_cols)
