@@ -40,7 +40,8 @@ catboost = "^1.2.7"
 pyarrow = "17.0.0"
 joblib = "^1.4.2"
 nolds = "^0.6.2"
-tsforge = ">=0.1.0"
+tsforge = "^1.0"
+hierarchicalforecast = "^1.4.0"
 
 [tool.poetry.extras]
 cli = ["typer", "rich"]
