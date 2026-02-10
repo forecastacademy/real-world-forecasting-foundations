@@ -37,6 +37,7 @@ mlforecast = "^1.0.2"
 neuralforecast = "^3.1.2"
 utilsforecast = "^0.2.14"
 tsfeatures = "^0.4.5"
+hierarchicalforecast = "^1.4.0"
 
 # ML regressors
 lightgbm = "^4.5.0"
@@ -49,10 +50,15 @@ typer = "^0.12.5"
 rich = "^13.9.4"
 holidays = "^0.58"
 joblib = "^1.4.2"
-# Pin to GitHub main branch to fix Python 3.11 importlib.resources bug (https://github.com/CSchoel/nolds/issues/80)
+
+# Pin to GitHub main branch to fix Python 3.11 importlib.resources bug
+# https://github.com/CSchoel/nolds/issues/80
 nolds = { git = "https://github.com/CSchoel/nolds.git", branch = "main" }
 
-# Performance / compatibility
+# Forecast Academy / system dependency
+tsforge = "^1.0"
+
+# Performance / compatibility guards
 numba = "<0.60"
 llvmlite = "<0.43"
 pyarrow = "17.0.0"
@@ -82,7 +88,7 @@ mkdocs-material = "^9.5.39"
 mkdocstrings = { extras = ["python"], version = "^0.26.2" }
 
 [tool.poetry.scripts]
-# CLI entrypoint (only if tsforge CLI lives inside this repo)
+# CLI entrypoint
 tsf = "forecast_foundations.tsforge.cli.main:app"
 
 [tool.ruff]
