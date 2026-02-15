@@ -188,6 +188,7 @@ class MetricsCalculator:
         metric_level: str,
         timesteps: Optional[List[Tuple[int, int]]] = None,
         metrics: List[str] = ["wmape", "bias", "jitter", "beat_rate"],
+        keep_intermediate_cols: bool = False,
     ) -> MetricResults:
         """
         Compute metrics at flexible grains with time filtering.
@@ -217,6 +218,10 @@ class MetricsCalculator:
         metrics : list[str], default=["wmape", "bias", "jitter", "beat_rate"]
             Metrics to compute. Must be subset of
             {"wmape", "bias", "jitter", "beat_rate"}.
+        keep_intermediate_cols : bool, default=False
+            If True, keeps intermediate calculation columns (sum_forecast, sum_actual,
+            error, abs_error, beat_count, beat_sum) in the final metric_level output.
+            If False, drops these columns after metric computation.
 
         Returns
         -------
@@ -279,10 +284,11 @@ class MetricsCalculator:
         # Step 5: Aggregate to portfolio (model) level
         portfolio_df = self._aggregate_to_portfolio(metric_level_df, metrics)
 
-        # Drop intermediate columns that still exist in final output
-        drop_cols = [c for c in drop_cols if c in metric_level_df.columns]
-        if drop_cols:
-            metric_level_df = metric_level_df.drop(drop_cols, axis=1)
+        # Drop intermediate columns that still exist in final output (unless keep_intermediate_cols=True)
+        if not keep_intermediate_cols:
+            drop_cols = [c for c in drop_cols if c in metric_level_df.columns]
+            if drop_cols:
+                metric_level_df = metric_level_df.drop(drop_cols, axis=1)
 
         return MetricResults(metric_level=metric_level_df, portfolio=portfolio_df)
 

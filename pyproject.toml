@@ -40,7 +40,8 @@ catboost = "^1.2.7"
 pyarrow = "17.0.0"
 joblib = "^1.4.2"
 nolds = "^0.6.2"
-tsforge = "^1.0"
+dtype-diet = "^0.0.2"
+tsforge = { git = "https://github.com/forecastacademy/tsforge.git" }
 hierarchicalforecast = "^1.4.0"
 
 [tool.poetry.extras]
