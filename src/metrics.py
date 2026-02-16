@@ -12,7 +12,7 @@ Features
 --------
 - Flexible error and metric grain aggregation
 - Time-based filtering (horizons, timesteps)
-- Four core metrics: WMAPE, BIAS, JITTER, BEAT_RATE
+- Five core metrics: WMAPE, BIAS, JITTER, BEAT_RATE, FVA
 - Dual-grain output: detail metrics + portfolio summary
 - Segment analysis for slicing by business dimensions
 
@@ -25,7 +25,7 @@ Usage
     ...     error_level="unique_id",
     ...     metric_level="item_id",
     ...     timesteps=[(5, 13)],
-    ...     metrics=["wmape", "bias", "jitter", "beat_rate"]
+    ...     metrics=["wmape", "bias", "jitter", "beat_rate", "fva"]
     ... )
     >>> results.metric_level  # item_id × model × cutoff
     >>> results.portfolio     # model level
@@ -33,6 +33,7 @@ Usage
 """
 
 from typing import Optional, Tuple, List, Dict
+from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -49,7 +50,56 @@ DEFAULT_TARGET_COL = "y"
 DEFAULT_CUTOFF_COL = "cutoff"
 DEFAULT_MODEL_COL = "model"
 
-VALID_METRICS = {"wmape", "bias", "jitter", "beat_rate"}
+VALID_METRICS = {"wmape", "bias", "jitter", "beat_rate", "fva"}
+
+
+# ============================================================================
+# Aggregation Configuration
+# ============================================================================
+
+
+@dataclass
+class AggregationConfig:
+    """Configuration for metric aggregation operations.
+
+    Attributes
+    ----------
+    groupby_keys : list[str]
+        Column names to group by during aggregation.
+    sum_columns : list[str], optional
+        Columns to sum during aggregation.
+    mean_columns : list[str], optional
+        Columns to average during aggregation.
+    first_columns : list[str], optional
+        Columns to take first value for during aggregation.
+    recompute_wmape : bool, default=True
+        Whether to recompute WMAPE after aggregation.
+    recompute_bias : bool, default=True
+        Whether to recompute BIAS after aggregation.
+    recompute_beat_rate : bool, default=True
+        Whether to recompute beat_rate after aggregation.
+    recompute_fva : bool, default=True
+        Whether to recompute FVA after aggregation.
+    apply_beat_rate_percentage : bool, default=False
+        Whether to apply percentage scaling (×100) to beat_rate.
+    fva_join_keys : list[str], optional
+        Join keys for extracting anchor WMAPE when recomputing FVA.
+        If None, FVA recomputation is skipped.
+    drop_intermediate_cols : bool, default=False
+        Whether to drop intermediate calculation columns (sum_forecast, sum_actual, etc.)
+    """
+
+    groupby_keys: List[str]
+    sum_columns: Optional[List[str]] = None
+    mean_columns: Optional[List[str]] = None
+    first_columns: Optional[List[str]] = None
+    recompute_wmape: bool = True
+    recompute_bias: bool = True
+    recompute_beat_rate: bool = True
+    recompute_fva: bool = True
+    apply_beat_rate_percentage: bool = False
+    fva_join_keys: Optional[List[str]] = None
+    drop_intermediate_cols: bool = False
 
 
 # ============================================================================
@@ -63,12 +113,14 @@ class MetricResults(BaseModel):
     Attributes
     ----------
     metric_level : pd.DataFrame
-        Detail metrics at metric_level × model × cutoff grain.
-        Columns include: metric_level, model, cutoff, sum_forecast,
-        sum_actual, error, abs_error, wmape, bias, beat_indicator, jitter
+        Detail metrics at metric_level × model grain (cutoff removed to ensure
+        single summary per groupbykeys). Jitter computed across all cutoffs;
+        beat_rate averaged across cutoffs (0-1 scale).
+        Columns include: metric_level, model, sum_forecast, sum_actual, error,
+        abs_error, wmape, bias, beat_rate, beat_sum, beat_count, fva, jitter
     portfolio : pd.DataFrame
         Portfolio summary aggregated to model level.
-        Columns include: model, wmape, bias, jitter, beat_rate
+        Columns include: model, wmape, bias, jitter, beat_rate, fva
     """
     metric_level: pd.DataFrame
     portfolio: pd.DataFrame
@@ -114,6 +166,7 @@ class MetricsCalculator:
         target_col: str = DEFAULT_TARGET_COL,
         cutoff_col: str = DEFAULT_CUTOFF_COL,
         model_col: str = DEFAULT_MODEL_COL,
+        fva_relative: bool = False,
     ):
         """Initialize MetricsCalculator with configuration."""
         self.anchor_model = anchor_model
@@ -122,6 +175,7 @@ class MetricsCalculator:
         self.target_col = target_col
         self.cutoff_col = cutoff_col
         self.model_col = model_col
+        self.fva_relative = fva_relative
 
     # ========================================================================
     # Main Orchestration
@@ -134,7 +188,7 @@ class MetricsCalculator:
         metric_level: str,
         timesteps: Optional[List[Tuple[int, int]]] = None,
         metrics: List[str] = ["wmape", "bias", "jitter", "beat_rate"],
-        group_by_cutoff: bool = True,
+        keep_intermediate_cols: bool = False,
     ) -> MetricResults:
         """
         Compute metrics at flexible grains with time filtering.
@@ -143,7 +197,7 @@ class MetricsCalculator:
         1. Filter by timesteps (if provided)
         2. Aggregate from error_level to metric_level (sum forecasts/actuals)
         3. Compute errors at metric_level grain
-        4. Compute requested metrics
+        4. Compute requested metrics (jitter always across all cutoffs)
         5. Aggregate to portfolio (model) level
 
         Parameters
@@ -164,17 +218,23 @@ class MetricsCalculator:
         metrics : list[str], default=["wmape", "bias", "jitter", "beat_rate"]
             Metrics to compute. Must be subset of
             {"wmape", "bias", "jitter", "beat_rate"}.
-        group_by_cutoff : bool, default=True
-            If True, metric_level results grouped by (metric_level, model, cutoff).
-            If False, aggregated to (metric_level, model) across all cutoffs.
+        keep_intermediate_cols : bool, default=False
+            If True, keeps intermediate calculation columns (sum_forecast, sum_actual,
+            error, abs_error, beat_count, beat_sum) in the final metric_level output.
+            If False, drops these columns after metric computation.
 
         Returns
         -------
         MetricResults
             Container with:
-            - metric_level: DataFrame at metric_level × model × cutoff grain (if group_by_cutoff=True)
-              or metric_level × model grain (if group_by_cutoff=False)
+            - metric_level: DataFrame at metric_level × model grain (cutoff removed from
+              final output; jitter computed across all cutoffs)
             - portfolio: DataFrame at model level with aggregated metrics
+
+        Raises
+        ------
+        ValueError
+            If jitter or beat_rate requested but cutoff_col not found in dataframe.
         """
         # Validate inputs
         invalid = set(metrics) - VALID_METRICS
@@ -184,36 +244,51 @@ class MetricsCalculator:
                 f"Must be subset of {VALID_METRICS}"
             )
 
+        # Validate cutoff column exists if jitter or beat_rate requested
+        if ("jitter" in metrics or "beat_rate" in metrics) and self.cutoff_col not in df.columns:
+            raise ValueError(
+                f"Metrics {[m for m in ['jitter', 'beat_rate'] if m in metrics]} "
+                f"require cutoff column '{self.cutoff_col}' which not found in dataframe. "
+                f"Available columns: {list(df.columns)}"
+            )
+
         # Step 1: Filter by timesteps
         df_filtered = self._filter_by_timesteps(df, timesteps)
 
         # Step 2: Aggregate to metric_level and compute errors
-        agg_df = self._aggregate_to_metric_level(
-            df_filtered, metric_level, group_by_cutoff=group_by_cutoff
-        )
+        agg_df = self._aggregate_to_metric_level(df_filtered, metric_level)
         agg_df = self._compute_aggregated_errors(agg_df)
 
         # Step 3: Compute requested metrics
         metric_level_df = agg_df.copy()
-
+        
+        drop_cols = []
         if "wmape" in metrics:
             metric_level_df = self._compute_wmape(metric_level_df)
-
+            drop_cols.extend(['sum_forecast','sum_actual','abs_error','error'])
         if "bias" in metrics:
             metric_level_df = self._compute_bias(metric_level_df)
 
         if "beat_rate" in metrics:
-            metric_level_df = self._compute_beat_rate(
-                metric_level_df, metric_level, group_by_cutoff=group_by_cutoff
-            )
-
+            metric_level_df = self._compute_beat_rate(metric_level_df, metric_level)
+            drop_cols.extend(['beat_count','beat_sum'])
+        if "fva" in metrics:
+            metric_level_df = self._compute_fva(metric_level_df, metric_level)
         if "jitter" in metrics:
-            metric_level_df = self._compute_jitter(
-                metric_level_df, metric_level, group_by_cutoff=group_by_cutoff
-            )
+            metric_level_df = self._compute_jitter(metric_level_df, metric_level)
 
-        # Step 4: Aggregate to portfolio (model) level
+        # Step 4: Remove cutoff from final metric_level_df to ensure single summary per groupbykeys
+        # (metric_level, model are the groupby keys; cutoff is only used for internal computation)
+        metric_level_df = self._finalize_metric_level(metric_level_df, metric_level)
+
+        # Step 5: Aggregate to portfolio (model) level
         portfolio_df = self._aggregate_to_portfolio(metric_level_df, metrics)
+
+        # Drop intermediate columns that still exist in final output (unless keep_intermediate_cols=True)
+        if not keep_intermediate_cols:
+            drop_cols = [c for c in drop_cols if c in metric_level_df.columns]
+            if drop_cols:
+                metric_level_df = metric_level_df.drop(drop_cols, axis=1)
 
         return MetricResults(metric_level=metric_level_df, portfolio=portfolio_df)
 
@@ -223,13 +298,13 @@ class MetricsCalculator:
         metric_levels: Dict[str, str],
         timesteps: Optional[List[Tuple[int, int]]] = None,
         metrics: List[str] = ["wmape", "bias", "jitter", "beat_rate"],
-        group_by_cutoff: bool = True,
     ) -> Dict[str, MetricResults]:
         """
         Compute metrics for multiple metric_level grains in one call.
 
         Takes a dictionary of error_level:metric_level pairs and returns
-        a dictionary of MetricResults, one per grain.
+        a dictionary of MetricResults, one per grain. Cutoff removed from
+        final output; jitter computed across all cutoffs.
 
         Parameters
         ----------
@@ -243,9 +318,6 @@ class MetricsCalculator:
             Time ranges to include. Each tuple is (start_week, end_week).
         metrics : list[str], default=["wmape", "bias", "jitter", "beat_rate"]
             Metrics to compute for all grains.
-        group_by_cutoff : bool, default=True
-            If True, include cutoff in metric_level grouping.
-            If False, aggregate across cutoffs.
 
         Returns
         -------
@@ -256,7 +328,7 @@ class MetricsCalculator:
         Raises
         ------
         ValueError
-            If metric_levels is empty.
+            If metric_levels is empty or jitter requested without cutoff column.
         """
         if not metric_levels:
             raise ValueError("metric_levels dictionary cannot be empty")
@@ -270,7 +342,6 @@ class MetricsCalculator:
                 metric_level=metric_level,
                 timesteps=timesteps,
                 metrics=metrics,
-                group_by_cutoff=group_by_cutoff,
             )
 
         return results
@@ -328,15 +399,13 @@ class MetricsCalculator:
         self,
         df: pd.DataFrame,
         metric_level: str,
-        group_by_cutoff: bool = True,
     ) -> pd.DataFrame:
         """
         Aggregate from error_level to metric_level.
 
-        Groups by (metric_level, model, cutoff) if group_by_cutoff=True,
-        or (metric_level, model) if group_by_cutoff=False.
-        Sums forecasts/actuals. Applies hygiene filter to exclude windows
-        with zero actual demand.
+        Groups by (metric_level, model, cutoff). Sums forecasts/actuals.
+        Applies hygiene filter to exclude windows with zero actual demand.
+        Cutoff is kept for internal metric computation and removed in final output.
 
         Parameters
         ----------
@@ -344,27 +413,20 @@ class MetricsCalculator:
             Filtered backtest data.
         metric_level : str
             Column to aggregate to (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, include cutoff in grouping. If False, aggregate across cutoffs.
 
         Returns
         -------
         pd.DataFrame
-            Aggregated data with columns: metric_level, model, [cutoff,]
+            Aggregated data with columns: metric_level, model, cutoff,
             sum_forecast, sum_actual.
         """
-        group_cols = [metric_level, self.model_col]
-        if group_by_cutoff:
-            group_cols.append(self.cutoff_col)
+        group_cols = [metric_level, self.model_col, self.cutoff_col]
 
         agg_df = (
             df.groupby(group_cols, as_index=False)
             .agg(sum_forecast=("y_pred", "sum"), sum_actual=(self.target_col, "sum"))
             .copy()
         )
-
-        # Hygiene: exclude zero demand (WMAPE/bias undefined)
-        agg_df = agg_df.query("sum_actual > 0").copy()
 
         return agg_df
 
@@ -389,6 +451,351 @@ class MetricsCalculator:
         )
 
         return agg_df
+
+    def _recompute_wmape_from_aggregates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Recompute WMAPE from aggregated base columns.
+
+        WMAPE = abs_error / sum_actual
+
+        Used after aggregation to recompute WMAPE from summed values.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with abs_error and sum_actual columns.
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with wmape column added/updated.
+        """
+        if "abs_error" not in df.columns or "sum_actual" not in df.columns:
+            return df
+
+        return df.assign(
+            wmape=lambda x: x["abs_error"] / x["sum_actual"]
+        )
+
+    def _recompute_bias_from_aggregates(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Recompute BIAS from aggregated base columns.
+
+        BIAS = error / sum_actual
+
+        Used after aggregation to recompute BIAS from summed values.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with error and sum_actual columns.
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with bias column added/updated.
+        """
+        if "error" not in df.columns or "sum_actual" not in df.columns:
+            return df
+
+        return df.assign(
+            bias=lambda x: x["error"] / x["sum_actual"]
+        )
+
+    def _recompute_beat_rate_from_aggregates(
+        self, df: pd.DataFrame, apply_percentage: bool = False
+    ) -> pd.DataFrame:
+        """
+        Recompute beat_rate from aggregated beat statistics.
+
+        beat_rate = beat_sum / beat_count
+
+        Used after aggregation to recompute beat_rate from summed beat indicators.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with beat_sum and beat_count columns.
+        apply_percentage : bool, default=False
+            If True, multiply by 100 to convert to percentage scale (0-100).
+            If False, returns decimal scale (0-1).
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with beat_rate column added/updated.
+        """
+        if "beat_sum" not in df.columns or "beat_count" not in df.columns:
+            return df
+
+        beat_rate = df["beat_sum"] / df["beat_count"]
+        if apply_percentage:
+            beat_rate = beat_rate * 100
+
+        return df.assign(beat_rate=beat_rate)
+
+    def _extract_anchor_wmape(
+        self, df: pd.DataFrame, join_keys: List[str]
+    ) -> pd.DataFrame:
+        """
+        Extract anchor model WMAPE and merge back to all models.
+
+        Filters dataframe to anchor model, extracts WMAPE, and merges
+        'anchor_wmape' column back to original dataframe on join_keys.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with model and wmape columns.
+        join_keys : list[str]
+            Column names to join on (e.g., [metric_level], [segment_col]).
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with added 'anchor_wmape' column.
+        """
+        anchor_df = df[df[self.model_col] == self.anchor_model].copy()
+        anchor_wmape = anchor_df[join_keys + ["wmape"]].rename(
+            columns={"wmape": "anchor_wmape"}
+        )
+
+        return df.merge(anchor_wmape, on=join_keys, how="left")
+
+    def _build_aggregation_dict(
+        self, df: pd.DataFrame, config: AggregationConfig
+    ) -> Dict[str, str]:
+        """
+        Build pandas aggregation dictionary conditionally based on available columns.
+
+        Only includes columns that exist in the dataframe.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to check for column availability.
+        config : AggregationConfig
+            Configuration specifying which columns to aggregate.
+
+        Returns
+        -------
+        dict[str, str]
+            Dictionary mapping column names to aggregation functions.
+        """
+        agg_dict = {}
+
+        # Add sum columns
+        if config.sum_columns:
+            for col in config.sum_columns:
+                if col in df.columns:
+                    agg_dict[col] = "sum"
+
+        # Add mean columns
+        if config.mean_columns:
+            for col in config.mean_columns:
+                if col in df.columns:
+                    agg_dict[col] = "mean"
+
+        # Add first columns
+        if config.first_columns:
+            for col in config.first_columns:
+                if col in df.columns:
+                    agg_dict[col] = "first"
+
+        return agg_dict
+
+    def _aggregate_with_config(
+        self, df: pd.DataFrame, config: AggregationConfig, metrics: List[str]
+    ) -> pd.DataFrame:
+        """
+        Generic aggregation method that handles all aggregation use cases.
+
+        Performs groupby aggregation with conditional recomputation of metrics.
+
+        Steps:
+        1. Build aggregation dictionary based on available columns
+        2. Perform groupby and aggregation
+        3. Recompute WMAPE/BIAS/beat_rate/FVA using helpers as configured
+        4. Drop intermediate columns if requested
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to aggregate.
+        config : AggregationConfig
+            Configuration for aggregation behavior.
+        metrics : list[str]
+            List of metrics (for determining which columns to expect).
+
+        Returns
+        -------
+        pd.DataFrame
+            Aggregated dataframe with recomputed metrics.
+        """
+        # Build aggregation dict
+        agg_dict = self._build_aggregation_dict(df, config)
+
+        # Perform groupby and aggregation
+        agg_df = df.groupby(config.groupby_keys, as_index=False).agg(agg_dict)
+
+        # Recompute metrics from aggregated base columns
+        if config.recompute_wmape and "wmape" in metrics:
+            agg_df = self._recompute_wmape_from_aggregates(agg_df)
+
+        if config.recompute_bias and "bias" in metrics:
+            agg_df = self._recompute_bias_from_aggregates(agg_df)
+
+        if config.recompute_beat_rate and "beat_rate" in metrics:
+            agg_df = self._recompute_beat_rate_from_aggregates(
+                agg_df, apply_percentage=config.apply_beat_rate_percentage
+            )
+
+        # Recompute FVA from aggregated WMAPE
+        if config.recompute_fva and "fva" in metrics and config.fva_join_keys:
+            agg_df = self._extract_anchor_wmape(agg_df, join_keys=config.fva_join_keys)
+            agg_df = self._compute_fva_from_wmapes(agg_df)
+
+        # Drop intermediate columns if requested
+        if config.drop_intermediate_cols:
+            cols_to_drop = [
+                col
+                for col in ["sum_forecast", "sum_actual", "error", "abs_error", "beat_sum", "beat_count"]
+                if col in agg_df.columns
+            ]
+            if cols_to_drop:
+                agg_df = agg_df.drop(columns=cols_to_drop)
+
+        return agg_df
+
+    def _infer_metrics_from_columns(self, df: pd.DataFrame) -> List[str]:
+        """
+        Determine which metrics are present from dataframe columns.
+
+        Checks for the presence of metric-related columns and infers
+        which metrics are available.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to check for metric columns.
+
+        Returns
+        -------
+        list[str]
+            List of metric names found in dataframe.
+        """
+        metrics = []
+        if "wmape" in df.columns:
+            metrics.append("wmape")
+        if "bias" in df.columns:
+            metrics.append("bias")
+        if "beat_rate" in df.columns:
+            metrics.append("beat_rate")
+        if "fva" in df.columns:
+            metrics.append("fva")
+        if "jitter" in df.columns:
+            metrics.append("jitter")
+        return metrics
+
+    def _drop_intermediate_columns(
+        self, df: pd.DataFrame, preserve_columns: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        """
+        Drop intermediate calculation columns not in final output.
+
+        Removes base columns used for computation (sum_forecast, sum_actual, error,
+        abs_error, beat_sum, beat_count) unless explicitly preserved.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame to clean.
+        preserve_columns : list[str], optional
+            Columns to preserve even if they would normally be dropped.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with intermediate columns removed.
+        """
+        intermediate_cols = [
+            "sum_forecast",
+            "sum_actual",
+            "error",
+            "abs_error",
+            "beat_sum",
+            "beat_count",
+        ]
+
+        if preserve_columns:
+            intermediate_cols = [c for c in intermediate_cols if c not in preserve_columns]
+
+        cols_to_drop = [c for c in intermediate_cols if c in df.columns]
+
+        if cols_to_drop:
+            return df.drop(columns=cols_to_drop)
+
+        return df
+
+    def _finalize_metric_level(
+        self,
+        metric_level_df: pd.DataFrame,
+        metric_level: str,
+    ) -> pd.DataFrame:
+        """
+        Finalize metric_level dataframe by removing cutoff column.
+
+        Ensures a single summary row per (metric_level, model) groupby keys.
+        Cutoff is used internally for metric computation but not included in final output.
+        Sums base columns across cutoffs and recomputes wmape/bias/beat_rate/fva.
+
+        Parameters
+        ----------
+        metric_level_df : pd.DataFrame
+            Computed metrics at (metric_level, model, cutoff) grain.
+        metric_level : str
+            The metric_level column name (e.g., "item_id").
+
+        Returns
+        -------
+        pd.DataFrame
+            Metric dataframe with cutoff removed, aggregated to
+            (metric_level, model) grain. wmape/bias recomputed from sums;
+            beat_rate averaged across cutoffs; FVA recomputed from aggregated wmape.
+        """
+        # Determine available metrics
+        metrics = []
+        if "wmape" in metric_level_df.columns:
+            metrics.append("wmape")
+        if "bias" in metric_level_df.columns:
+            metrics.append("bias")
+        if "beat_indicator" in metric_level_df.columns or "beat_rate" in metric_level_df.columns:
+            metrics.append("beat_rate")
+        if "fva" in metric_level_df.columns:
+            metrics.append("fva")
+        if "jitter" in metric_level_df.columns:
+            metrics.append("jitter")
+
+        # Rename beat_indicator to beat_sum for aggregation compatibility
+        if "beat_indicator" in metric_level_df.columns:
+            metric_level_df = metric_level_df.rename(columns={"beat_indicator": "beat_sum"})
+
+        # Configure aggregation
+        config = AggregationConfig(
+            groupby_keys=[metric_level, self.model_col],
+            sum_columns=["sum_forecast", "sum_actual", "error", "abs_error", "beat_sum", "beat_count"],
+            first_columns=["jitter", "fva"],
+            recompute_wmape=True,
+            recompute_bias=True,
+            recompute_beat_rate=True,
+            recompute_fva=True,
+            apply_beat_rate_percentage=False,
+            fva_join_keys=[metric_level],
+            drop_intermediate_cols=False,
+        )
+
+        # Use unified aggregation framework
+        return self._aggregate_with_config(metric_level_df, config, metrics)
 
     # ========================================================================
     # Metrics Computation
@@ -438,12 +845,13 @@ class MetricsCalculator:
         return df
 
     def _compute_beat_rate(
-        self, df: pd.DataFrame, metric_level: str, group_by_cutoff: bool = True
+        self, df: pd.DataFrame, metric_level: str
     ) -> pd.DataFrame:
         """
         Compute beat rate against anchor model.
 
         A model "beats" the anchor if its WMAPE is lower.
+        Comparison done within each cutoff.
 
         Parameters
         ----------
@@ -451,18 +859,14 @@ class MetricsCalculator:
             Aggregated data with wmape column.
         metric_level : str
             The metric_level column name (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, compare within each cutoff. If False, compare overall.
 
         Returns
         -------
         pd.DataFrame
             Input with added beat_indicator column (0/1).
         """
-        # Get anchor performance
-        merge_keys = [metric_level]
-        if group_by_cutoff:
-            merge_keys.append(self.cutoff_col)
+        # Get anchor performance (compare within each cutoff)
+        merge_keys = [metric_level, self.cutoff_col]
 
         anchor_wmape = (
             df[df[self.model_col] == self.anchor_model]
@@ -481,19 +885,68 @@ class MetricsCalculator:
             beat_indicator=lambda x: (x["wmape"] < x["anchor_wmape"]).astype(int)
         )
 
+        df = df.assign(
+            beat_count=1  # Count observations for proper aggregation across cutoffs
+        )
+
         df = df.drop(columns=["anchor_wmape"])
 
         return df
 
-    def _compute_jitter(
-        self, df: pd.DataFrame, metric_level: str, group_by_cutoff: bool = True
+    def _compute_fva_from_wmapes(
+        self, df: pd.DataFrame, drop_anchor_col: bool = True
     ) -> pd.DataFrame:
         """
-        Compute JITTER (stability of WMAPE across cutoffs).
+        Compute FVA from anchor_wmape and wmape columns.
 
-        For each (model, metric_level_item): std(wmape across cutoffs).
-        When group_by_cutoff=False, jitter is set to NaN since there's only
-        one wmape value per series.
+        Handles both absolute and relative FVA based on self.fva_relative.
+
+        Formula:
+        - Absolute: fva = anchor_wmape - wmape
+        - Relative: fva = (anchor_wmape - wmape) / anchor_wmape × 100
+
+        Used after anchor_wmape has been extracted and merged by _extract_anchor_wmape().
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with wmape and anchor_wmape columns.
+        drop_anchor_col : bool, default=True
+            If True, drops the anchor_wmape column after computing FVA.
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with fva column added/updated (and anchor_wmape dropped if drop_anchor_col=True).
+        """
+        if "wmape" not in df.columns or "anchor_wmape" not in df.columns:
+            return df
+
+        if self.fva_relative:
+            df = df.assign(
+                fva=lambda x: np.where(
+                    x["anchor_wmape"] != 0,
+                    ((x["anchor_wmape"] - x["wmape"]) / x["anchor_wmape"]) * 100,
+                    np.nan,
+                )
+            )
+        else:
+            df = df.assign(fva=lambda x: x["anchor_wmape"] - x["wmape"])
+
+        if drop_anchor_col:
+            df = df.drop(columns=["anchor_wmape"])
+
+        return df
+
+    def _compute_fva(self, df: pd.DataFrame, metric_level: str) -> pd.DataFrame:
+        """
+        Compute FVA (Forecast Value Add) against anchor model.
+
+        FVA = anchor_model_wmape - model_wmape (in percentage points by default)
+        When fva_relative=True: FVA = (anchor_wmape - model_wmape) / anchor_wmape × 100
+
+        Comparison done within each cutoff. At finalize/portfolio/segment stages,
+        FVA is recomputed from aggregated WMAPE values to ensure proper weighting.
 
         Parameters
         ----------
@@ -501,32 +954,51 @@ class MetricsCalculator:
             Aggregated data with wmape column.
         metric_level : str
             The metric_level column name (e.g., "item_id").
-        group_by_cutoff : bool, default=True
-            If True, compute std across cutoffs. If False, set to NaN.
 
         Returns
         -------
         pd.DataFrame
-            Input with added jitter column (std of wmape per series, or NaN).
+            Input with added fva column.
         """
-        if group_by_cutoff:
-            # Compute jitter per series (std across cutoffs)
-            series_jitter = (
-                df.groupby([self.model_col, metric_level])["wmape"]
-                .std()
-                .reset_index()
-                .rename(columns={"wmape": "jitter"})
-            )
+        merge_keys = [metric_level, self.cutoff_col]
+        df = self._extract_anchor_wmape(df, join_keys=merge_keys)
+        df = self._compute_fva_from_wmapes(df)
+        return df
 
-            # Merge back to detail
-            df = df.merge(
-                series_jitter,
-                on=[self.model_col, metric_level],
-                how="left",
-            )
-        else:
-            # No variation across cutoffs when aggregated, set to NaN
-            df = df.assign(jitter=np.nan)
+    def _compute_jitter(
+        self, df: pd.DataFrame, metric_level: str
+    ) -> pd.DataFrame:
+        """
+        Compute JITTER (stability of WMAPE across cutoffs).
+
+        For each (model, metric_level_item): std(wmape across all cutoffs).
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Aggregated data with wmape column.
+        metric_level : str
+            The metric_level column name (e.g., "item_id").
+
+        Returns
+        -------
+        pd.DataFrame
+            Input with added jitter column (std of wmape across all cutoffs per series).
+        """
+        # Always compute jitter per series (std across all cutoffs)
+        series_jitter = (
+            df.groupby([self.model_col, metric_level])["wmape"]
+            .std()
+            .reset_index()
+            .rename(columns={"wmape": "jitter"})
+        )
+
+        # Merge back to detail
+        df = df.merge(
+            series_jitter,
+            on=[self.model_col, metric_level],
+            how="left",
+        )
 
         return df
 
@@ -540,6 +1012,9 @@ class MetricsCalculator:
         """
         Aggregate metric_level results to portfolio (model) level.
 
+        Recomputes metrics from base columns at portfolio grain to maintain
+        proper weighting. Beat_rate returned in percentage scale (0-100).
+
         Parameters
         ----------
         metric_level_df : pd.DataFrame
@@ -552,38 +1027,50 @@ class MetricsCalculator:
         pd.DataFrame
             Portfolio metrics aggregated by model.
         """
-        # Initialize portfolio with model column
-        portfolio = metric_level_df.groupby(self.model_col).first()[[]]
+        # Configure aggregation (FVA handled separately due to different anchor extraction)
+        config = AggregationConfig(
+            groupby_keys=[self.model_col],
+            sum_columns=["abs_error", "sum_actual", "error", "beat_sum", "beat_count"],
+            mean_columns=["jitter"],
+            recompute_wmape=True,
+            recompute_bias=True,
+            recompute_beat_rate=True,
+            recompute_fva=False,  # Handle FVA separately below
+            apply_beat_rate_percentage=True,  # Convert to 0-100 scale at portfolio level
+            drop_intermediate_cols=False,  # Keep intermediate cols for FVA computation
+        )
 
-        if "wmape" in metrics:
-            # Recompute at portfolio: sum(all abs_error) / sum(all sum_actual)
-            wmape_agg = metric_level_df.groupby(self.model_col).agg(
-                wmape=("abs_error", "sum"),
-                _total_actual=("sum_actual", "sum"),
-            )
-            portfolio["wmape"] = wmape_agg["wmape"] / wmape_agg["_total_actual"]
+        # Use unified aggregation framework
+        portfolio = self._aggregate_with_config(metric_level_df, config, metrics)
 
-        if "bias" in metrics:
-            # Recompute at portfolio: sum(all error) / sum(all sum_actual)
-            bias_agg = metric_level_df.groupby(self.model_col).agg(
-                bias=("error", "sum"),
-                _total_actual=("sum_actual", "sum"),
-            )
-            portfolio["bias"] = bias_agg["bias"] / bias_agg["_total_actual"]
+        # Compute FVA at portfolio level if requested
+        if "fva" in metrics and "wmape" in portfolio.columns:
+            # Extract anchor WMAPE
+            anchor_wmape_val = portfolio.loc[
+                portfolio[self.model_col] == self.anchor_model, "wmape"
+            ].values
 
-        if "jitter" in metrics:
-            # Mean of series-level jitter values
-            jitter_agg = metric_level_df.groupby(self.model_col)["jitter"].mean()
-            portfolio["jitter"] = jitter_agg
+            if len(anchor_wmape_val) > 0:
+                anchor_wmape_val = anchor_wmape_val[0]
+                if self.fva_relative:
+                    portfolio["fva"] = np.where(
+                        anchor_wmape_val != 0,
+                        ((anchor_wmape_val - portfolio["wmape"]) / anchor_wmape_val) * 100,
+                        np.nan,
+                    )
+                else:
+                    portfolio["fva"] = anchor_wmape_val - portfolio["wmape"]
 
-        if "beat_rate" in metrics:
-            # Fraction of items that beat anchor
-            beat_rate_agg = metric_level_df.groupby(self.model_col)[
-                "beat_indicator"
-            ].mean()
-            portfolio["beat_rate"] = beat_rate_agg * 100
+        # Drop intermediate columns
+        cols_to_drop = [
+            col
+            for col in ["sum_forecast", "sum_actual", "error", "abs_error", "beat_sum", "beat_count"]
+            if col in portfolio.columns
+        ]
+        if cols_to_drop:
+            portfolio = portfolio.drop(columns=cols_to_drop)
 
-        return portfolio.reset_index()
+        return portfolio
 
     # ========================================================================
     # Segment Analysis
@@ -599,7 +1086,7 @@ class MetricsCalculator:
         Compute metrics sliced by business segments.
 
         Takes metric_level results and aggregates by segment column(s).
-        Single responsibility: segment-level aggregation only.
+        Recomputes metrics from base columns at segment grain for proper weighting.
 
         Parameters
         ----------
@@ -617,7 +1104,7 @@ class MetricsCalculator:
         dict[str, pd.DataFrame]
             Dictionary keyed by segment column name. Each value is a
             DataFrame with metrics aggregated by that segment.
-            Columns: segment_col, model, wmape, bias, beat_rate (as applicable).
+            Columns: segment_col, model, wmape, bias, beat_rate, fva (as applicable).
 
         Raises
         ------
@@ -637,41 +1124,36 @@ class MetricsCalculator:
         segment_results = {}
 
         for segment_col in segment_cols:
-            segment_df = (
-                df.groupby([segment_col, self.model_col], as_index=False)
-                .agg(
-                    _total_abs_error=("abs_error", "sum"),
-                    _total_error=("error", "sum"),
-                    _total_actual=("sum_actual", "sum"),
-                )
-            )
+            # Check if intermediate columns exist (they may have been dropped after compute_metrics)
+            has_intermediates = all(col in df.columns for col in ["abs_error", "sum_actual", "error", "beat_sum", "beat_count"])
 
-            if "wmape" in metrics:
-                segment_df["wmape"] = (
-                    segment_df["_total_abs_error"] / segment_df["_total_actual"]
+            if has_intermediates:
+                # Configure aggregation for this segment using intermediate columns
+                config = AggregationConfig(
+                    groupby_keys=[segment_col, self.model_col],
+                    sum_columns=["abs_error", "sum_actual", "error", "beat_sum", "beat_count"],
+                    recompute_wmape=True,
+                    recompute_bias=True,
+                    recompute_beat_rate=True,
+                    recompute_fva=True,
+                    apply_beat_rate_percentage=True,  # Convert to 0-100 scale at segment level
+                    fva_join_keys=[segment_col],  # Extract anchor WMAPE per segment
+                    drop_intermediate_cols=True,
                 )
-
-            if "bias" in metrics:
-                segment_df["bias"] = (
-                    segment_df["_total_error"] / segment_df["_total_actual"]
-                )
-
-            if "beat_rate" in metrics:
-                # Fraction of (segment, model, cutoff) combos that beat anchor
-                beat_per_combo = (
-                    df.groupby([segment_col, self.model_col])["beat_indicator"].mean()
-                    * 100
-                )
-                segment_df = segment_df.merge(
-                    beat_per_combo.reset_index().rename(
-                        columns={"beat_indicator": "beat_rate"}
-                    ),
-                    on=[segment_col, self.model_col],
+            else:
+                # Fallback: aggregate final metrics directly
+                config = AggregationConfig(
+                    groupby_keys=[segment_col, self.model_col],
+                    mean_columns=[m for m in metrics if m in df.columns],
+                    recompute_wmape=False,
+                    recompute_bias=False,
+                    recompute_beat_rate=False,
+                    recompute_fva=False,
+                    drop_intermediate_cols=False,
                 )
 
-            # Clean up temp columns
-            temp_cols = [c for c in segment_df.columns if c.startswith("_")]
-            segment_df = segment_df.drop(columns=temp_cols)
+            # Use unified aggregation framework
+            segment_df = self._aggregate_with_config(df, config, metrics)
 
             segment_results[segment_col] = segment_df
 
