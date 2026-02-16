@@ -56,7 +56,7 @@ joblib = "^1.4.2"
 nolds = { git = "https://github.com/CSchoel/nolds.git", branch = "main" }
 
 # Forecast Academy / system dependency
-tsforge = "^1.0"
+tsforge = {git = "https://github.com/forecastacademy/tsforge.git"}
 
 # Performance / compatibility guards
 numba = "<0.60"
@@ -68,6 +68,7 @@ datasetsforecast = { version = "^0.0.8", optional = true }
 
 # PDF export (optional)
 weasyprint = { version = "^62.0", optional = true }
+dtype-diet = "^0.0.2"
 
 [tool.poetry.extras]
 teaching = ["datasetsforecast"]

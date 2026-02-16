@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 import matplotlib.pyplot as plt
 
-from forecast_foundations.plots import theme
+
 
 def find_project_root(marker_files=('.git', 'pyproject.toml')) -> Path:
     """
